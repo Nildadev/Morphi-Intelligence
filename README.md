@@ -77,5 +77,9 @@ To enable AI orchestration, you must install and activate the **Morphi MCP Plugi
 
 This project is licensed under the [ISC License](LICENSE).
 
+## 🙏 Acknowledgments
+
+- **[robloxstudio-mcp](https://github.com/boshyxd/robloxstudio-mcp)** by **[boshyxd](https://github.com/boshyxd)**: The core MCP server implementation that enables Morphi to interact with Roblox Studio.
+
 ---
-*Created by **Nildadev** | Morphi Intelligence v1.0.3 preview beta*
+*Created by **Nildadev** | Morphi Intelligence*

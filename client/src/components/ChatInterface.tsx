@@ -6,11 +6,12 @@ import { SettingsModal } from './SettingsModal';
 import { MemoryManagerModal } from './MemoryManagerModal';
 import { CreateProjectModal } from './CreateProjectModal';
 import { ConfirmModal } from './ConfirmModal';
+import { OnboardingModal } from './OnboardingModal';
 import { ToastContainer, useToasts } from './Toast';
 import type { Session, Message, Project } from '../types';
 import { api } from '../lib/api';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Sparkles, Wifi, WifiOff, Settings } from 'lucide-react';
+import { Sparkles, Wifi, WifiOff, Settings, HelpCircle } from 'lucide-react';
 
 const SUGGESTION_CHIPS = [
     { icon: '⚔️', label: 'Combat system', prompt: 'Write a modular combat system with hitbox detection for Roblox.' },
@@ -29,6 +30,7 @@ export const ChatInterface: React.FC = () => {
     const [showSettings, setShowSettings] = useState(false);
     const [showMemory, setShowMemory] = useState(false);
     const [showCreateProject, setShowCreateProject] = useState(false);
+    const [showOnboarding, setShowOnboarding] = useState(false);
     const [projectToDelete, setProjectToDelete] = useState<string | null>(null);
     const [mcpConnected, setMcpConnected] = useState<boolean | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -40,7 +42,19 @@ export const ChatInterface: React.FC = () => {
     };
 
     useEffect(() => { scrollToBottom(); }, [messages]);
-    useEffect(() => { loadProjects(); checkMcp(); }, []);
+    useEffect(() => {
+        loadProjects();
+        checkMcp();
+
+        const hasSeenOnboarding = localStorage.getItem('hasSeenOnboarding_v2');
+        if (!hasSeenOnboarding) {
+            setShowOnboarding(true);
+            localStorage.setItem('hasSeenOnboarding_v2', 'true');
+        }
+
+        const intervalId = setInterval(checkMcp, 5000);
+        return () => clearInterval(intervalId);
+    }, []);
 
     const checkMcp = async () => {
         try {
@@ -303,11 +317,18 @@ export const ChatInterface: React.FC = () => {
                                 }`}
                         >
                             {mcpConnected === true
-                                ? <><Wifi size={11} /> Studio</>
+                                ? <><Wifi size={11} /> Connected</>
                                 : mcpConnected === false
                                     ? <><WifiOff size={11} /> Reconnect</>
                                     : <><span className="h-1.5 w-1.5 rounded-full bg-text-muted animate-pulse" /> Checking…</>
                             }
+                        </button>
+                        <button
+                            onClick={() => setShowOnboarding(true)}
+                            className="p-1.5 rounded-lg text-text-muted hover:text-text-main hover:bg-surface-border/50 transition-all"
+                            title="Help & Guide"
+                        >
+                            <HelpCircle size={16} />
                         </button>
                         <button
                             onClick={() => setShowSettings(true)}
@@ -410,6 +431,7 @@ export const ChatInterface: React.FC = () => {
                 confirmText="Delete Project"
                 variant="danger"
             />
+            <OnboardingModal isOpen={showOnboarding} onClose={() => setShowOnboarding(false)} />
         </div>
     );
 };

@@ -18,10 +18,30 @@ export class McpService {
             console.log("[MCP] Starting Roblox Studio MCP Server...");
 
             const isWindows = process.platform === 'win32';
+            let commandStr = "npx";
+
+            if (isWindows) {
+                try {
+                    // Electron process.execPath is the electron binary, not node.
+                    // To reliably find npx.cmd on the system, we can use the 'where' command.
+                    const execSync = require('child_process').execSync;
+                    const npxPath = execSync('where npx').toString().split('\n').filter(Boolean)[0].trim();
+                    commandStr = npxPath || "npx.cmd";
+                } catch (e) {
+                    console.log("[MCP] Failed to resolve npx path using 'where', falling back to npx.cmd");
+                    commandStr = "npx.cmd";
+                }
+            }
+
+            console.log("[MCP] Environment check:", {
+                platform: process.platform,
+                commandStr
+            });
+
             this.transport = new StdioClientTransport({
-                command: isWindows ? "npx.cmd" : "npx",
-                args: ["-y", "robloxstudio-mcp@latest", "--install-plugin"],
-                stderr: "inherit" // Share stderr with backend log for better visibility
+                command: commandStr,
+                args: ["-y", "robloxstudio-mcp@latest"],
+                stderr: "inherit"
             });
 
             this.client = new Client(

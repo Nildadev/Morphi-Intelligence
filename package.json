@@ -15,17 +15,20 @@
   "build": {
     "appId": "com.morphi.intelligence",
     "productName": "Morphi Intelligence",
+    "compression": "store",
     "directories": {
       "output": "dist_electron"
     },
     "files": [
       "main.js",
       "logo.png",
+      "package.json",
       "server/dist/**/*",
       "server/*.json",
       "client/dist/**/*",
       "node_modules/**/*",
-      "package.json"
+      "!node_modules/{@types,typescript,vite,electron,electron-builder}/**/*",
+      "!**/node_modules/*/{README.md,test,docs,examples,changelog.md,LICENSE}*"
     ],
     "win": {
       "target": "portable",
@@ -42,6 +45,7 @@
     "@google-cloud/vertexai": "^1.10.0",
     "@google/generative-ai": "^0.24.1",
     "@modelcontextprotocol/sdk": "^1.26.0",
+    "better-sqlite3": "^12.6.2",
     "cors": "^2.8.6",
     "dotenv": "^17.2.4",
     "express": "^5.2.1",

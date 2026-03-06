@@ -104,6 +104,16 @@ app.listen(PORT, () => {
     console.log(`Morphi Server → http://localhost:${PORT}`);
 });
 
+process.on('uncaughtException', (err) => {
+    console.error('[Backend] Uncaught Exception:', err);
+    process.exit(1); // Exit to prevent corrupted state
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('[Backend] Unhandled Rejection at:', promise, 'reason:', reason);
+    process.exit(1); // Exit to prevent corrupted state
+});
+
 // ── Graceful Shutdown ─────────────────────────────────────────────────────────
 const shutdown = async (signal: string) => {
     console.log(`[Shutdown] Received ${signal}, cleaning up...`);

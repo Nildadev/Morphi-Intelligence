@@ -39,7 +39,7 @@ function createWindow() {
         height: 800,
         title: "Morphi Intelligence",
         autoHideMenuBar: true, // Tự động ẩn menu
-        icon: path.join(__dirname, 'client/public/vite.svg'), // Icon cho cửa sổ
+        icon: path.join(__dirname, 'logo.png'), // Icon cho cửa sổ
         webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,
