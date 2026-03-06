@@ -1,0 +1,10 @@
+{
+    "model": "glm-4.6",
+    "messages": [
+        {
+            "role": "user",
+            "content": "hi"
+        }
+    ],
+    "stream": false
+}

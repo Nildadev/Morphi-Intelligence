@@ -1,0 +1,55 @@
+{
+  "projects": {
+    "l43k0mxj4": {
+      "id": "l43k0mxj4",
+      "name": "diddy sim",
+      "createdAt": 1770541250485,
+      "lastActive": 1770542142501
+    }
+  },
+  "sessions": {
+    "zl252waqr": {
+      "id": "zl252waqr",
+      "projectId": "l43k0mxj4",
+      "title": "hi",
+      "lastUpdated": 1770542142501,
+      "messages": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "hi"
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "Hello! I'm here to help you with your Roblox development tasks. I can assist with:\n\n- Exploring your game's structure and hierarchy\n- Modifying instances, properties, and scripts\n- Creating new objects or duplicating existing ones\n- Managing attributes, tags, and collections\n- Editing script content\n- Finding specific objects or files\n\nWhat would you like me to help you with today?\n"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "can you create a part in my workspace"
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "I'll help you create a part in your workspace. Let me do that for you right away.\nI've successfully created a new Part in your Workspace! Here are the details:\n\n- **Name**: NewPart\n- **Class**: Part\n- **Parent**: game.Workspace\n- **Path**: game.Workspace.NewPart\n\nThe part has been created and is now visible in your Workspace. Is there anything specific you'd like to do with this part or would you like me to create additional objects?"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "notes": [],
+  "currentProjectId": "l43k0mxj4",
+  "currentSessionId": "zl252waqr"
+}

@@ -1,0 +1,50 @@
+{
+  "name": "morphi-intelligence",
+  "version": "1.0.3-preview-beta",
+  "description": "Roblox Studio AI Orchestrator",
+  "main": "main.js",
+  "author": "Phuc",
+  "scripts": {
+    "build:client": "cd client && npm run build",
+    "build:server": "cd server && npm run build",
+    "build": "npm run build:client && npm run build:server",
+    "start": "electron .",
+    "dist": "npm run build && electron-builder",
+    "dev": "concurrently \"npm run dev --prefix server\" \"npm run dev --prefix client\""
+  },
+  "build": {
+    "appId": "com.morphi.intelligence",
+    "productName": "Morphi Intelligence",
+    "directories": {
+      "output": "dist_electron"
+    },
+    "files": [
+      "main.js",
+      "logo.png",
+      "server/dist/**/*",
+      "server/*.json",
+      "client/dist/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "portable",
+      "icon": "logo.png"
+    }
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3",
+    "electron-is-dev": "^2.0.0"
+  },
+  "dependencies": {
+    "@google-cloud/vertexai": "^1.10.0",
+    "@google/generative-ai": "^0.24.1",
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.2.4",
+    "express": "^5.2.1",
+    "openai": "^6.18.0"
+  }
+}

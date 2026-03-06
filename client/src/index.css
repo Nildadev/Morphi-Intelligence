@@ -1,0 +1,97 @@
+@import "tailwindcss";
+
+@theme {
+  /* ChatGPT-inspired Palette */
+  --color-brand-primary: #10a37f;
+  --color-brand-hover: #1a7f64;
+  
+  /* These will be overridden by .light and .dark classes */
+  --color-surface-bg: var(--bg-main);
+  --color-surface-sidebar: var(--bg-sidebar);
+  --color-surface-card: var(--bg-card);
+  --color-surface-border: var(--border-color);
+  
+  --color-text-main: var(--text-primary);
+  --color-text-muted: var(--text-secondary);
+  
+  --shadow-premium: 0 8px 30px rgba(0, 0, 0, 0.12);
+}
+
+:root {
+  /* Default Light Mode */
+  --bg-main: #ffffff;
+  --bg-sidebar: #f9f9f9;
+  --bg-card: #ffffff;
+  --border-color: #e5e5e5;
+  --text-primary: #0d0d0d;
+  --text-secondary: #676767;
+}
+
+.dark {
+  /* Dark Mode */
+  --bg-main: #212121;
+  --bg-sidebar: #171717;
+  --bg-card: #2f2f2f;
+  --border-color: #383838;
+  --text-primary: #ececec;
+  --text-secondary: #b4b4b4;
+}
+
+body {
+  @apply bg-surface-bg text-text-main antialiased transition-colors duration-300;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-surface-border rounded-full hover:bg-text-muted/30 transition-colors;
+}
+
+/* Thinner hover-only scrollbar for sidebar */
+.sidebar-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+.sidebar-scrollbar::-webkit-scrollbar-thumb {
+  @apply bg-transparent rounded-full;
+}
+.sidebar-scrollbar:hover::-webkit-scrollbar-thumb {
+  @apply bg-surface-border;
+}
+
+/* Base utilities */
+.glass-card {
+  @apply bg-surface-card border border-surface-border shadow-sm;
+}
+
+/* Typography Overrides for Markdown */
+.prose {
+  @apply max-w-none;
+  --tw-prose-body: var(--text-primary);
+  --tw-prose-headings: var(--text-primary);
+  --tw-prose-links: #10a37f;
+  --tw-prose-bold: var(--text-primary);
+  --tw-prose-code: var(--text-primary);
+  --tw-prose-pre-bg: var(--bg-sidebar);
+}
+
+.prose pre {
+  border: 1px solid var(--color-surface-border) !important;
+  border-radius: 0.75rem !important;
+}
+
+.prose code {
+  background-color: var(--color-surface-border) !important;
+  padding: 0.125rem 0.375rem !important;
+  border-radius: 0.375rem !important;
+  font-weight: 500 !important;
+  opacity: 0.8;
+}
