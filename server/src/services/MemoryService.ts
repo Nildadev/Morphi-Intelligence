@@ -3,6 +3,7 @@ import db from '../db';
 export interface Message {
     role: 'user' | 'model';
     parts: { text: string }[];
+    thought?: string;
     steps?: any[];
     calls?: any[];
 }
@@ -31,7 +32,7 @@ export interface Note {
 }
 
 export class MemoryService {
-    
+
     constructor() {
         // DB is initialized on import
     }
@@ -47,12 +48,12 @@ export class MemoryService {
             createdAt: now,
             lastActive: now
         };
-        
+
         db.prepare(`
             INSERT INTO projects (id, name, description, created_at, last_active)
             VALUES (?, ?, ?, ?, ?)
         `).run(id, name, description || null, now, now);
-        
+
         return project;
     }
 
@@ -79,7 +80,7 @@ export class MemoryService {
     }
 
     // --- Sessions ---
-    createSession(projectId: string, title: string = "New Chat"): Session {
+    createSession(projectId: string, title: string = "Thinking..."): Session {
         const id = Math.random().toString(36).substr(2, 9);
         const now = Date.now();
         const session: Session = {
@@ -115,7 +116,7 @@ export class MemoryService {
             messages: this.getHistory(s.id)
         }));
     }
-    
+
     getAllSessions(): Session[] {
         const sessions = db.prepare(`
             SELECT id, project_id as projectId, title, last_updated as lastUpdated, is_pinned as isPinned
@@ -158,37 +159,32 @@ export class MemoryService {
         }
     }
 
-    addToHistory(role: 'user' | 'model', text: string, sessionId: string, calls?: any[]) {
+    addToHistory(role: 'user' | 'model', text: string, sessionId: string, calls?: any[], thought?: string, steps?: any[]) {
         const now = Date.now();
-        
+
         // Insert message
         db.prepare(`
-            INSERT INTO messages (session_id, role, content, created_at, calls)
-            VALUES (?, ?, ?, ?, ?)
-        `).run(sessionId, role, text, now, calls ? JSON.stringify(calls) : null);
+            INSERT INTO messages (session_id, role, content, thought, created_at, calls, steps)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(sessionId, role, text, thought || null, now, calls ? JSON.stringify(calls) : null, steps ? JSON.stringify(steps) : null);
 
         // Update session last_updated
         db.prepare('UPDATE sessions SET last_updated = ? WHERE id = ?').run(now, sessionId);
-        
+
         // Update project last_active
         const session = this.getSession(sessionId);
         if (session) {
             db.prepare('UPDATE projects SET last_active = ? WHERE id = ?').run(now, session.projectId);
         }
+    }
 
-        // Auto-title for first user message
-        if (role === 'user') {
-            const count = db.prepare('SELECT COUNT(*) as count FROM messages WHERE session_id = ?').get(sessionId) as any;
-            if (count.count === 1) {
-                const newTitle = text.substring(0, 30) + (text.length > 30 ? "..." : "");
-                db.prepare('UPDATE sessions SET title = ? WHERE id = ?').run(newTitle, sessionId);
-            }
-        }
+    updateSessionTitle(sessionId: string, title: string) {
+        db.prepare('UPDATE sessions SET title = ? WHERE id = ?').run(title, sessionId);
     }
 
     getHistory(sessionId: string): Message[] {
         const rows = db.prepare(`
-            SELECT role, content, steps, calls
+            SELECT role, content, thought, steps, calls
             FROM messages
             WHERE session_id = ?
             ORDER BY created_at ASC, id ASC
@@ -197,6 +193,7 @@ export class MemoryService {
         return rows.map(row => ({
             role: row.role as 'user' | 'model',
             parts: [{ text: row.content }],
+            thought: row.thought || undefined,
             steps: row.steps ? JSON.parse(row.steps) : undefined,
             calls: row.calls ? JSON.parse(row.calls) : undefined
         }));
@@ -226,18 +223,18 @@ export class MemoryService {
         const sessionCount = (db.prepare('SELECT COUNT(*) as c FROM sessions').get() as any).c;
         const messageCount = (db.prepare('SELECT COUNT(*) as c FROM messages').get() as any).c;
         const noteCount = (db.prepare('SELECT COUNT(*) as c FROM notes').get() as any).c;
-        
+
         // File size approximation
         const fs = require('fs');
         const path = require('path');
         const getMemoryPath = () => {
-             const appData = process.env.APPDATA || (process.platform === 'darwin' ? process.env.HOME + '/Library/Preferences' : process.env.HOME + '/.local/share');
-             return path.join(appData, 'MorphiIntelligence', 'morphi.db');
+            const appData = process.env.APPDATA || (process.platform === 'darwin' ? process.env.HOME + '/Library/Preferences' : process.env.HOME + '/.local/share');
+            return path.join(appData, 'MorphiIntelligence', 'morphi.db');
         };
         let fileSize = 0;
         try {
             fileSize = fs.statSync(getMemoryPath()).size;
-        } catch (e) {}
+        } catch (e) { }
 
         return {
             projectCount,

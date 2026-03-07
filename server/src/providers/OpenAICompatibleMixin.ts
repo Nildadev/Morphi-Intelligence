@@ -38,8 +38,45 @@ export async function* runOpenAICompatibleChat(
 
     let currentMessages: any[] = [
         { role: 'system', content: SYSTEM_PROMPT },
-        ...messages,
     ];
+
+    for (const m of messages) {
+        if (m.calls && m.calls.length > 0) {
+            // Reconstruct tool calls with stable IDs for this session
+            const toolCalls = m.calls.map((c, i) => ({
+                id: `hist_call_${i}_${Math.random().toString(36).substring(7)}`,
+                type: 'function' as const,
+                function: { name: c.name, arguments: JSON.stringify(c.args) }
+            }));
+
+            // 1. Assistant message that initiated the calls
+            currentMessages.push({
+                role: 'assistant',
+                content: m.content || null,
+                tool_calls: toolCalls
+            });
+
+            // 2. Individual tool results
+            for (let i = 0; i < m.calls.length; i++) {
+                let result = m.calls[i].result || '';
+                // Safety: Truncate extremely large tool results (e.g. 50k+ chars)
+                if (result.length > 50000) {
+                    result = result.substring(0, 50000) + "\n\n...(truncated due to size)...";
+                }
+
+                currentMessages.push({
+                    role: 'tool',
+                    tool_call_id: toolCalls[i].id,
+                    content: result
+                });
+            }
+        } else {
+            currentMessages.push({
+                role: m.role,
+                content: m.content
+            });
+        }
+    }
 
     let shouldContinue = true;
     const MAX_TOOL_ROUNDS = 10; // Safety limit for agentic loops
@@ -82,6 +119,12 @@ export async function* runOpenAICompatibleChat(
                         if (tc.function?.arguments)
                             toolCallsBuffer[tc.index].function.arguments += tc.function.arguments;
                     }
+                }
+
+                // Stream reasoning/thought content
+                const reasoning = (delta as any)?.reasoning_content || (delta as any)?.reasoning;
+                if (reasoning) {
+                    yield { type: 'thought', content: reasoning };
                 }
 
                 // Stream text content

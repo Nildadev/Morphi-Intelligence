@@ -7,6 +7,7 @@ export class McpService {
     private transport: StdioClientTransport | null = null;
     private isConnected: boolean = false;
     private isConnecting: boolean = false;
+    private isStudioLinked: boolean = false;
 
     constructor() { }
 
@@ -22,8 +23,6 @@ export class McpService {
 
             if (isWindows) {
                 try {
-                    // Electron process.execPath is the electron binary, not node.
-                    // To reliably find npx.cmd on the system, we can use the 'where' command.
                     const execSync = require('child_process').execSync;
                     const npxPath = execSync('where npx').toString().split('\n').filter(Boolean)[0].trim();
                     commandStr = npxPath || "npx.cmd";
@@ -41,8 +40,23 @@ export class McpService {
             this.transport = new StdioClientTransport({
                 command: commandStr,
                 args: ["-y", "robloxstudio-mcp@latest"],
-                stderr: "inherit"
+                // Pipe stderr so we can parse connection status from the bridge
+                stderr: "pipe"
             });
+
+            // Handle stderr logs to detect Studio link status
+            if (this.transport.stderr) {
+                this.transport.stderr.on('data', (data: Buffer) => {
+                    const line = data.toString();
+                    process.stderr.write(data); // Still show in our console
+
+                    if (line.includes("Waiting for Studio plugin")) {
+                        this.isStudioLinked = false;
+                    } else if (line.includes("Connected to Roblox Studio") || line.includes("Studio plugin connected")) {
+                        this.isStudioLinked = true;
+                    }
+                });
+            }
 
             this.client = new Client(
                 { name: "Morphi-Backend", version: "1.0.0" },
@@ -79,6 +93,10 @@ export class McpService {
 
     get connected(): boolean {
         return this.isConnected;
+    }
+
+    get studioLinked(): boolean {
+        return this.isStudioLinked;
     }
 
     async listTools(): Promise<ListToolsResult> {

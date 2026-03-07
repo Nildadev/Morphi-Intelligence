@@ -4,6 +4,11 @@ const http = require('http');
 
 let mainWindow;
 
+// Fix for "Unable to create cache" and "Access is denied"
+app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
+app.commandLine.appendSwitch('disable-http-cache');
+app.commandLine.appendSwitch('disable-gpu-cache');
+
 // Khởi động Backend trực tiếp từ main process
 function startBackend() {
     try {

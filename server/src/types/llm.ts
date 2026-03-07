@@ -1,8 +1,21 @@
 export interface Message {
   role: 'user' | 'assistant' | 'system';
   content: string;
+  thought?: string;
   images?: string[]; // Base64 strings
+  calls?: {
+    name: string;
+    args: any;
+    result?: string;
+  }[];
+  steps?: MessageStep[];
 }
+
+export type MessageStep =
+  | { type: 'text', content: string }
+  | { type: 'call', name: string, args: any, result?: string }
+  | { type: 'task', title: string, completed?: boolean };
+
 
 export interface Model {
   id: string;
@@ -23,7 +36,7 @@ export interface LLMProvider {
 }
 
 export interface StreamChunk {
-  type: 'content' | 'error' | 'done' | 'call';
+  type: 'content' | 'error' | 'done' | 'call' | 'thought';
   content?: string;
   call?: {
     name: string;

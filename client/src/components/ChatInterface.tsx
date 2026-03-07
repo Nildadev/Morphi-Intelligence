@@ -33,6 +33,7 @@ export const ChatInterface: React.FC = () => {
     const [showOnboarding, setShowOnboarding] = useState(false);
     const [projectToDelete, setProjectToDelete] = useState<string | null>(null);
     const [mcpConnected, setMcpConnected] = useState<boolean | null>(null);
+    const [studioLinked, setStudioLinked] = useState<boolean>(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const abortControllerRef = useRef<AbortController | null>(null);
     const { toasts, showToast, dismissToast } = useToasts();
@@ -61,8 +62,10 @@ export const ChatInterface: React.FC = () => {
             const res = await fetch('http://localhost:3000/api/tools');
             const data = await res.json();
             setMcpConnected(data.connected === true);
+            setStudioLinked(data.studioLinked === true);
         } catch {
             setMcpConnected(false);
+            setStudioLinked(false);
         }
     };
 
@@ -218,12 +221,43 @@ export const ChatInterface: React.FC = () => {
             text, activeSessionId!, model || 'gemini-2.0-flash', extendedThinking,
             (chunk) => setMessages(prev => {
                 const arr = [...prev];
-                arr[arr.length - 1] = { ...arr[arr.length - 1], content: arr[arr.length - 1].content + chunk };
+                const last = { ...arr[arr.length - 1] };
+                const steps = [...(last.steps || [])];
+                const lastStep = steps[steps.length - 1];
+
+                if (lastStep?.type === 'text') {
+                    steps[steps.length - 1] = { ...lastStep, content: lastStep.content + chunk };
+                } else {
+                    steps.push({ type: 'text', content: chunk });
+                }
+
+                last.content += chunk;
+                last.steps = steps;
+                arr[arr.length - 1] = last;
+                return arr;
+            }),
+            (thoughtChunk) => setMessages(prev => {
+                const arr = [...prev];
+                const last = arr[arr.length - 1];
+                arr[arr.length - 1] = { ...last, thought: (last.thought || '') + thoughtChunk };
                 return arr;
             }),
             (call) => setMessages(prev => {
                 const arr = [...prev];
-                const last = arr[arr.length - 1];
+                const last = { ...arr[arr.length - 1] };
+                const steps = [...(last.steps || [])];
+
+                const stepIdx = [...steps].reverse().findIndex(s => s.type === 'call' && s.name === call.name && (s as any).status === 'running');
+                if (stepIdx > -1 && call.result !== undefined) {
+                    const realIdx = steps.length - 1 - stepIdx;
+                    steps[realIdx] = { ...steps[realIdx], result: call.result, status: 'done' } as any;
+                } else if (call.result === undefined) {
+                    steps.push({ type: 'call', name: call.name, args: call.args, status: 'running' });
+                } else {
+                    steps.push({ type: 'call', name: call.name, args: call.args, result: call.result, status: 'done' });
+                }
+
+                // Keep legacy calls array for compatibility if needed elsewhere
                 const calls = [...(last.calls || [])];
                 const idx = calls.findIndex(c => c.name === call.name && c.status === 'running');
                 if (idx > -1 && call.result !== undefined) {
@@ -233,10 +267,16 @@ export const ChatInterface: React.FC = () => {
                 } else {
                     calls.push({ name: call.name, args: call.args, result: call.result, status: 'done' });
                 }
-                arr[arr.length - 1] = { ...last, calls };
+
+                last.steps = steps;
+                last.calls = calls;
+                arr[arr.length - 1] = last;
                 return arr;
             }),
-            () => { setIsLoading(false); if (currentProjectId) loadSessions(currentProjectId); },
+            () => {
+                setIsLoading(false);
+                if (currentProjectId) loadSessions(currentProjectId);
+            },
             (errorMsg) => {
                 if (errorMsg === 'The user aborted a request.') return;
                 setIsLoading(false);
@@ -307,17 +347,24 @@ export const ChatInterface: React.FC = () => {
                         {/* MCP status badge */}
                         <button
                             onClick={mcpConnected ? undefined : handleReconnectMcp}
-                            title={mcpConnected ? 'Roblox Studio MCP connected' : 'MCP disconnected — click to reconnect'}
+                            title={
+                                mcpConnected === false ? 'MCP disconnected — click to reconnect' :
+                                    studioLinked ? 'Roblox Studio Linked' : 'Bridge ready, waiting for Studio plugin…'
+                            }
                             className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold border transition-all
                                 ${mcpConnected === true
-                                    ? 'bg-green-500/10 text-green-500 border-green-500/20'
+                                    ? studioLinked
+                                        ? 'bg-green-500/10 text-green-500 border-green-500/20'
+                                        : 'bg-amber-500/10 text-amber-500 border-amber-500/20'
                                     : mcpConnected === false
                                         ? 'bg-red-500/10 text-red-400 border-red-500/20 hover:bg-red-500/20 cursor-pointer'
                                         : 'bg-surface-border/50 text-text-muted border-surface-border'
                                 }`}
                         >
                             {mcpConnected === true
-                                ? <><Wifi size={11} /> Connected</>
+                                ? studioLinked
+                                    ? <><Wifi size={11} /> Linked</>
+                                    : <><Wifi size={11} className="animate-pulse" /> Ready</>
                                 : mcpConnected === false
                                     ? <><WifiOff size={11} /> Reconnect</>
                                     : <><span className="h-1.5 w-1.5 rounded-full bg-text-muted animate-pulse" /> Checking…</>

@@ -49,7 +49,11 @@ app.get('/api/tools', async (_req: Request, res: Response) => {
             return res.json({ connected: false, tools: [] });
         }
         const result = await mcpService.listTools();
-        res.json({ connected: true, tools: result.tools ?? [] });
+        res.json({
+            connected: true,
+            studioLinked: mcpService.studioLinked,
+            tools: result.tools ?? []
+        });
     } catch (error: any) {
         res.json({ connected: false, tools: [], error: error.message });
     }

@@ -9,6 +9,7 @@ export interface Project {
 export interface Message {
   role: 'user' | 'assistant' | 'system';
   content: string;
+  thought?: string;        // The AI's pre-tool thinking
   timestamp?: number;
   isError?: boolean;       // True when the message IS an error (empty failed stream)
   errorNote?: string;      // Appended error note after partial stream
@@ -18,7 +19,14 @@ export interface Message {
     result?: string;
     status: 'running' | 'done' | 'error';
   }[];
+  steps?: MessageStep[];
 }
+
+export type MessageStep =
+  | { type: 'text', content: string }
+  | { type: 'call', name: string, args: any, result?: string, status: 'running' | 'done' | 'error' }
+  | { type: 'task', title: string, completed?: boolean };
+
 
 export interface Session {
   id: string;
@@ -46,7 +54,7 @@ export interface Model {
 }
 
 export interface StreamChunk {
-  type: 'content' | 'error' | 'done' | 'call';
+  type: 'content' | 'error' | 'done' | 'call' | 'thought';
   content?: string;
   call?: {
     name: string;

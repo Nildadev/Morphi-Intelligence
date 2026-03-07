@@ -41,6 +41,7 @@ export const api = {
       messages: (s.messages || []).map((m: any) => ({
         role: m.role === 'model' ? 'assistant' : m.role,
         content: m.content || (m.parts && m.parts[0] ? m.parts[0].text : '') || '',
+        thought: m.thought,
         calls: (m.calls || []).map((c: any) => ({
           ...c,
           status: c.result ? 'done' : 'running'
@@ -73,6 +74,7 @@ export const api = {
     modelId: string,
     extendedThinking: boolean = false,
     onChunk: (chunk: string) => void,
+    onThought: (thought: string) => void,
     onCall: (call: { name: string, args: any, result?: string }) => void,
     onDone: () => void,
     onError: (err: string) => void,
@@ -110,6 +112,7 @@ export const api = {
           try {
             const data: StreamChunk = JSON.parse(jsonStr);
             if (data.type === 'content' && data.content) onChunk(data.content);
+            else if (data.type === 'thought' && data.content) onThought(data.content);
             else if (data.type === 'call' && data.call) onCall(data.call);
             else if (data.type === 'done') { onDone(); return; }
             else if (data.type === 'error') throw new Error(data.content || 'Unknown error');

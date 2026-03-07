@@ -7,7 +7,7 @@ import type { Project, Session, Message } from './services/MemoryService';
 const getAppDataPath = () => {
     const appData = process.env.APPDATA || (process.platform === 'darwin' ? process.env.HOME + '/Library/Preferences' : process.env.HOME + '/.local/share');
     const morphiDir = path.join(appData, 'MorphiIntelligence');
-    
+
     if (!fs.existsSync(morphiDir)) {
         try {
             fs.mkdirSync(morphiDir, { recursive: true });
@@ -50,6 +50,7 @@ const initSchema = () => {
             session_id TEXT NOT NULL,
             role TEXT NOT NULL,
             content TEXT NOT NULL,
+            thought TEXT,
             created_at INTEGER DEFAULT (strftime('%s', 'now') * 1000),
             steps TEXT, -- JSON string
             calls TEXT, -- JSON string
@@ -63,6 +64,13 @@ const initSchema = () => {
             created_at INTEGER DEFAULT (strftime('%s', 'now') * 1000)
         );
     `);
+
+    // Migration: Add thought column if missing
+    try {
+        db.exec("ALTER TABLE messages ADD COLUMN thought TEXT;");
+    } catch {
+        // Column probably already exists
+    }
 };
 
 // Migration from memory.json
@@ -99,7 +107,7 @@ const migrateFromJSON = () => {
             INSERT INTO messages (session_id, role, content, created_at, steps, calls)
             VALUES (?, ?, ?, ?, ?, ?)
         `);
-        
+
         const insertNote = db.prepare(`
             INSERT OR IGNORE INTO notes (id, title, content, created_at)
             VALUES (?, ?, ?, ?)
@@ -117,7 +125,7 @@ const migrateFromJSON = () => {
             if (data.sessions) {
                 for (const s of Object.values(data.sessions) as Session[]) {
                     insertSession.run(s.id, s.projectId, s.title, s.lastUpdated || Date.now(), s.isPinned ? 1 : 0);
-                    
+
                     if (s.messages && Array.isArray(s.messages)) {
                         for (const m of s.messages) {
                             const text = m.parts?.[0]?.text || '';
@@ -126,10 +134,10 @@ const migrateFromJSON = () => {
                             // Since old format didn't have timestamp per message, we use session's lastUpdated for simplicity or just current.
                             // Ideally, we space them out slightly to keep order.
                             insertMessage.run(
-                                s.id, 
-                                m.role, 
-                                text, 
-                                Date.now(), 
+                                s.id,
+                                m.role,
+                                text,
+                                Date.now(),
                                 m.steps ? JSON.stringify(m.steps) : null,
                                 m.calls ? JSON.stringify(m.calls) : null
                             );

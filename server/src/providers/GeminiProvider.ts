@@ -83,14 +83,39 @@ export class GeminiProvider extends BaseProvider {
       });
 
       // Build initial history
-      const history = [
+      const history: any[] = [
         { role: 'user', parts: [{ text: SYSTEM_PROMPT }] },
-        { role: 'model', parts: [{ text: "Understood. I am Morphi AI, ready to assist with your Roblox project." }] },
-        ...messages.slice(0, -1).map(m => ({
-          role: m.role === 'assistant' ? 'model' : 'user',
-          parts: [{ text: m.content }]
-        }))
+        { role: 'model', parts: [{ text: "Understood. I am Morphi AI, ready to assist with your Roblox project." }] }
       ];
+
+      for (const m of messages.slice(0, -1)) {
+        const role = m.role === 'assistant' ? 'model' : 'user';
+        const parts: any[] = [{ text: m.content || '' }];
+
+        if (m.calls && m.calls.length > 0) {
+          // Add tool calls
+          for (const call of m.calls) {
+            parts.push({
+              functionCall: {
+                name: call.name,
+                args: call.args
+              }
+            });
+          }
+          history.push({ role, parts });
+
+          // Add corresponding responses as a separate turn
+          const responseParts = m.calls.map(call => ({
+            functionResponse: {
+              name: call.name,
+              response: { content: call.result || "No result provided." }
+            }
+          }));
+          history.push({ role: 'user', parts: responseParts });
+        } else {
+          history.push({ role, parts });
+        }
+      }
 
       const chat = model.startChat({ history });
       let currentInput: any = messages[messages.length - 1].content;
@@ -101,12 +126,22 @@ export class GeminiProvider extends BaseProvider {
         const result = await chat.sendMessageStream(currentInput);
 
         for await (const chunk of result.stream) {
-          // Check for text
+          // Check for thinking/reasoning (Gemini 2.0 Thinking models)
+          const candidate = chunk.candidates?.[0];
+          if (candidate?.content?.parts) {
+            for (const part of candidate.content.parts) {
+              if ((part as any).thought) {
+                yield { type: 'thought', content: (part as any).text };
+              }
+            }
+          }
+
+          // Check for text content
           try {
             const text = chunk.text();
             if (text) yield { type: 'content', content: text };
           } catch (e) {
-            // chunk.text() throws if it only contains function calls
+            // chunk.text() throws if it only contains function calls or only thought
           }
 
           // Check for function calls
@@ -117,7 +152,12 @@ export class GeminiProvider extends BaseProvider {
               // Notify frontend
               yield { type: 'call', call: { name: call.name, args: call.args } };
 
-              const toolResult = await this.executeTool(call.name, call.args);
+              let toolResult = await this.executeTool(call.name, call.args);
+
+              // Safety: Truncate extremely large tool results (e.g. 50k+ chars)
+              if (toolResult.length > 50000) {
+                toolResult = toolResult.substring(0, 50000) + "\n\n...(truncated due to size)...";
+              }
 
               // Notify frontend with result
               yield { type: 'call', call: { name: call.name, args: call.args, result: toolResult } };
