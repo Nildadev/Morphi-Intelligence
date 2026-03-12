@@ -1,6 +1,6 @@
 # Morphi Intelligence
 
-> **v1.0.3 preview beta** | Roblox Studio AI Orchestrator
+> **v1.0.4 preview beta** | Roblox Studio AI Orchestrator
 
 Morphi is a powerful, AI-driven assistant designed specifically for Roblox development. It integrates directly with Roblox Studio using the Model Context Protocol (MCP), providing real-time coding assistance, system design, and debugging through a sleek, ChatGPT-inspired interface.
 
