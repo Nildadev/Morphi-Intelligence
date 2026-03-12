@@ -2,6 +2,7 @@ import { BaseProvider } from './BaseProvider';
 import { Model, Message, StreamChunk } from '../types/llm';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { SYSTEM_PROMPT } from '../services/SystemPrompt';
+import { ModelRegistry } from '../services/ModelRegistry';
 
 export class GeminiProvider extends BaseProvider {
   constructor() {
@@ -31,23 +32,15 @@ export class GeminiProvider extends BaseProvider {
       }
     }
 
-    // Fallback: Fetch from OpenRouter's public API (no key needed)
+    // Fallback: Fetch from models.dev (no key needed)
     try {
-      const response = await fetch('https://openrouter.ai/api/v1/models');
-      if (!response.ok) return [];
-
-      const data = await response.json();
-      return (data.data || [])
-        .filter((m: any) => m.id.startsWith('google/'))
-        .map((m: any) => ({
-          id: m.id.replace('google/', ''), // Keep raw ID for GeminiProvider
-          name: m.name.replace('Google: ', ''),
-          provider: this.id,
-          providerLabel: this.name,
-          logo: this.logo,
-          description: m.description || 'Google Gemini Model (via public metadata)',
-          context: m.context_length,
-        }));
+      const googleModels = await ModelRegistry.getModelsByProvider('google');
+      return googleModels.map((m: any) => ({
+        ...m,
+        id: m.id.replace('google/', ''), // Keep raw ID for GeminiProvider
+        provider: this.id,
+        providerLabel: this.name,
+      }));
     } catch {
       return [];
     }
@@ -76,17 +69,15 @@ export class GeminiProvider extends BaseProvider {
       const model = genAI.getGenerativeModel({
         model: modelId,
         tools: tools as any,
+        systemInstruction: SYSTEM_PROMPT,
         generationConfig: {
           maxOutputTokens: maxTokens,
           temperature: 0.7,
         }
       });
 
-      // Build initial history
-      const history: any[] = [
-        { role: 'user', parts: [{ text: SYSTEM_PROMPT }] },
-        { role: 'model', parts: [{ text: "Understood. I am Morphi AI, ready to assist with your Roblox project." }] }
-      ];
+      // Build initial history - pure and aligned with systemInstruction
+      const history: any[] = [];
 
       for (const m of messages.slice(0, -1)) {
         const role = m.role === 'assistant' ? 'model' : 'user';

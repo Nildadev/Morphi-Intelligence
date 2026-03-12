@@ -30,6 +30,12 @@ export const api = {
     return res.json();
   },
 
+  async getProviders(): Promise<any[]> {
+    const res = await fetch(`${API_BASE}/models/providers`);
+    if (!res.ok) throw new Error('Failed to fetch providers');
+    return res.json();
+  },
+
   // --- Sessions ---
   async getSessions(projectId?: string): Promise<Session[]> {
     const url = projectId ? `${API_BASE}/sessions?projectId=${projectId}` : `${API_BASE}/sessions`;

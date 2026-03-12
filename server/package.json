@@ -1,6 +1,6 @@
 {
   "name": "server",
-  "version": "1.0.4-preview-beta",
+  "version": "1.0.5-release-beta",
   "description": "",
   "main": "index.js",
   "scripts": {

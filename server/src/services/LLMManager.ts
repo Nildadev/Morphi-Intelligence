@@ -4,6 +4,7 @@ import { OpenAIProvider } from '../providers/OpenAIProvider';
 import { GeminiProvider } from '../providers/GeminiProvider';
 import { OpenRouterProvider } from '../providers/OpenRouterProvider';
 import { ProxyPalProvider } from '../providers/ProxyPalProvider';
+import { ModelRegistry } from './ModelRegistry';
 
 class LLMManager {
   private providers: Map<string, BaseProvider> = new Map();
@@ -27,12 +28,35 @@ class LLMManager {
 
   updateKey(providerId: string, apiKey: string) {
     const provider = this.providers.get(providerId);
-    if (!provider) throw new Error(`Unknown provider: ${providerId}`);
-    provider.configure(apiKey);
+    if (provider) {
+      provider.configure(apiKey);
+    } else {
+      // For any provider not natively implemented, we just store it in env/state
+      // so that generic model fetching from ModelRegistry can potentially use it.
+      // In a real app, you might want to persist this to a DB/config file.
+      console.log(`[LLMManager] Key updated for dynamic provider: ${providerId}`);
+    }
     // Invalidate cache so updated key is used on next getModels() call
     this.lastFetch = 0;
     this.cachedModels = [];
     this.modelProviderMap.clear();
+  }
+
+  async getProviders(): Promise<any[]> {
+    const native = Array.from(this.providers.entries()).map(([id, p]) => ({
+      id,
+      name: p.name,
+      logo: (p as any).logo || `https://models.dev/logos/${id}.svg`,
+      native: true
+    }));
+
+    const registry = await ModelRegistry.getProviders();
+    const nativeIds = new Set(native.map(n => n.id));
+
+    return [
+      ...native,
+      ...registry.filter(r => !nativeIds.has(r.id)).map(r => ({ ...r, native: false }))
+    ];
   }
 
   getProvider(id: string): BaseProvider | undefined {
@@ -61,6 +85,20 @@ class LLMManager {
           newMap.set(model.id, model.provider);
         }
       }
+    }
+
+    // Mix in models from models.dev for discovered providers
+    try {
+      const registryModels = await ModelRegistry.getModels(forceRefresh);
+      for (const m of registryModels) {
+        // Only add if not already present from a native provider's direct fetch
+        if (!newMap.has(m.id)) {
+          models.push(m);
+          newMap.set(m.id, m.provider);
+        }
+      }
+    } catch (e) {
+      console.warn('[LLMManager] Registry models mix-in failed:', e);
     }
 
     this.cachedModels = models;

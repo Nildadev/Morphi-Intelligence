@@ -14,17 +14,19 @@
   --color-text-main: var(--text-primary);
   --color-text-muted: var(--text-secondary);
 
-  --shadow-premium: 0 8px 30px rgba(0, 0, 0, 0.12);
+  /* Premium Shadows */
+  --shadow-premium: 0 12px 40px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.02);
+  --shadow-glass: 0 8px 32px 0 rgba(0, 0, 0, 0.1);
 }
 
 :root {
-  /* Default Light Mode */
-  --bg-main: #ffffff;
-  --bg-sidebar: #f9f9f9;
+  /* Default Light Mode - Refined Zinc Palette */
+  --bg-main: #fafafa;
+  --bg-sidebar: #f4f4f5;
   --bg-card: #ffffff;
-  --border-color: #e5e5e5;
-  --text-primary: #0d0d0d;
-  --text-secondary: #676767;
+  --border-color: #e4e4e7;
+  --text-primary: #18181b;
+  --text-secondary: #52525b;
 }
 
 .dark {
@@ -69,9 +71,21 @@ body {
   @apply bg-surface-border;
 }
 
-/* Base utilities */
+/* Glassmorphism utilities */
+.glass-panel {
+  @apply bg-white/70 dark:bg-[#1f1f1f]/70 backdrop-blur-xl border border-black/5 dark:border-white/5;
+}
+
 .glass-card {
-  @apply bg-surface-card border border-surface-border shadow-sm;
+  @apply bg-surface-card/60 backdrop-blur-md border border-surface-border shadow-sm;
+}
+
+.btn-primary {
+  @apply bg-brand-primary text-white hover:bg-brand-hover transition-all duration-300 font-semibold px-4 py-2 rounded-xl active:scale-95 flex items-center gap-2;
+}
+
+.btn-ghost {
+  @apply text-text-muted hover:text-text-main hover:bg-surface-border/40 transition-all duration-200 p-2 rounded-lg;
 }
 
 /* Typography Overrides for Markdown */

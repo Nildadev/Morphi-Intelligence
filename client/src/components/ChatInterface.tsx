@@ -331,27 +331,32 @@ export const ChatInterface: React.FC = () => {
             />
 
             <main className="flex-1 flex flex-col relative min-w-0">
-                {/* Clean minimal header */}
-                <header className="h-12 flex items-center justify-between px-4 border-b border-surface-border shrink-0 bg-surface-bg">
-                    <div className="flex items-center gap-2 text-sm text-text-muted font-medium">
-                        <span className="text-text-main font-semibold truncate max-w-[200px]">
-                            {sessions.find(s => s.id === currentSessionId)?.title || 'Morphi'}
-                        </span>
-                        {currentProjectId && (
-                            <span className="text-[11px] text-text-muted truncate max-w-[120px]">
-                                / {projects.find(p => p.id === currentProjectId)?.name}
-                            </span>
-                        )}
+                {/* Floating Integrated Header */}
+                <header className="h-14 flex items-center justify-between px-6 shrink-0 bg-surface-bg/80 backdrop-blur-md sticky top-0 z-[100]">
+                    <div className="flex items-center gap-3">
+                        <div className="flex flex-col">
+                            <h2 className="text-[15px] font-bold text-text-main tracking-tight leading-none">
+                                {sessions.find(s => s.id === currentSessionId)?.title || 'New Session'}
+                            </h2>
+                            {currentProjectId && (
+                                <span className="text-[10px] text-text-muted/60 font-bold uppercase tracking-[0.1em] mt-1.5 flex items-center gap-1.5">
+                                    <div className="h-1 w-1 rounded-full bg-brand-primary" />
+                                    {projects.find(p => p.id === currentProjectId)?.name}
+                                </span>
+                            )}
+                        </div>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-3">
                         {/* MCP status badge */}
-                        <button
+                        <motion.button
+                            whileHover={{ scale: 1.02 }}
+                            whileTap={{ scale: 0.98 }}
                             onClick={mcpConnected ? undefined : handleReconnectMcp}
                             title={
                                 mcpConnected === false ? 'MCP disconnected — click to reconnect' :
-                                    studioLinked ? 'Roblox Studio Linked' : 'Bridge ready, waiting for Studio plugin…'
+                                    studioLinked ? 'Bridge Active' : 'Bridge ready, waiting for Studio plug-in…'
                             }
-                            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold border transition-all
+                            className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-[10px] font-bold uppercase tracking-wider border transition-all
                                 ${mcpConnected === true
                                     ? studioLinked
                                         ? 'bg-green-500/10 text-green-500 border-green-500/20'
@@ -363,27 +368,30 @@ export const ChatInterface: React.FC = () => {
                         >
                             {mcpConnected === true
                                 ? studioLinked
-                                    ? <><Wifi size={11} /> Linked</>
-                                    : <><Wifi size={11} className="animate-pulse" /> Ready</>
+                                    ? <><Wifi size={12} /> Bridge Active</>
+                                    : <><Wifi size={12} className="animate-pulse" /> Linking...</>
                                 : mcpConnected === false
-                                    ? <><WifiOff size={11} /> Reconnect</>
-                                    : <><span className="h-1.5 w-1.5 rounded-full bg-text-muted animate-pulse" /> Checking…</>
+                                    ? <><WifiOff size={12} /> Reconnect</>
+                                    : <><span className="h-1.5 w-1.5 rounded-full bg-text-muted animate-pulse" /> Syncing...</>
                             }
-                        </button>
-                        <button
-                            onClick={() => setShowOnboarding(true)}
-                            className="p-1.5 rounded-lg text-text-muted hover:text-text-main hover:bg-surface-border/50 transition-all"
-                            title="Help & Guide"
-                        >
-                            <HelpCircle size={16} />
-                        </button>
-                        <button
-                            onClick={() => setShowSettings(true)}
-                            className="p-1.5 rounded-lg text-text-muted hover:text-text-main hover:bg-surface-border/50 transition-all"
-                            title="Settings"
-                        >
-                            <Settings size={16} />
-                        </button>
+                        </motion.button>
+                        
+                        <div className="flex items-center gap-1 border-l border-surface-border/40 ml-1 pl-3">
+                            <button
+                                onClick={() => setShowOnboarding(true)}
+                                className="btn-ghost p-1.5"
+                                title="Help & Guide"
+                            >
+                                <HelpCircle size={18} />
+                            </button>
+                            <button
+                                onClick={() => setShowSettings(true)}
+                                className="btn-ghost p-1.5"
+                                title="Settings"
+                            >
+                                <Settings size={18} />
+                            </button>
+                        </div>
                     </div>
                 </header>
 
@@ -395,37 +403,39 @@ export const ChatInterface: React.FC = () => {
                             {messages.length === 0 && (
                                 <motion.div
                                     key="welcome"
-                                    initial={{ opacity: 0, y: 10 }}
-                                    animate={{ opacity: 1, y: 0 }}
-                                    exit={{ opacity: 0 }}
-                                    className="flex flex-col items-center justify-center pt-24 pb-16 text-center px-4"
+                                    initial={{ opacity: 0, scale: 0.98 }}
+                                    animate={{ opacity: 1, scale: 1 }}
+                                    exit={{ opacity: 0, scale: 0.98 }}
+                                    className="flex flex-col items-center justify-center pt-20 pb-16 text-center px-4"
                                 >
-                                    <div className="h-14 w-14 rounded-2xl bg-brand-primary/10 flex items-center justify-center mb-6 border border-brand-primary/20">
-                                        <Sparkles size={28} className="text-brand-primary" />
+                                    <div className="relative mb-8">
+                                        <div className="h-20 w-20 rounded-[28px] bg-brand-primary/10 flex items-center justify-center border border-brand-primary/20 rotate-6" />
+                                        <div className="absolute inset-0 h-20 w-20 rounded-[28px] bg-brand-primary/10 flex items-center justify-center border border-brand-primary/20 -rotate-3 backdrop-blur-sm" />
+                                        <div className="absolute inset-0 h-20 w-20 rounded-[28px] bg-brand-primary flex items-center justify-center shadow-2xl shadow-brand-primary/40 transform -translate-y-1 -translate-x-1">
+                                            <Sparkles size={32} className="text-white" />
+                                        </div>
                                     </div>
-                                    <h1 className="text-3xl font-bold text-text-main tracking-tight mb-2">
-                                        Where should we begin?
+                                    <h1 className="text-4xl font-bold text-text-main tracking-tight mb-4">
+                                        Level up your development
                                     </h1>
-                                    <p className="text-text-muted text-sm mb-10 max-w-sm">
-                                        Ask me anything about Roblox development — scripting, systems, debugging, or game design.
+                                    <p className="text-text-muted/60 text-[15px] font-medium mb-12 max-w-sm">
+                                        Architecting your next experience. How can I help you build today?
                                     </p>
 
                                     {/* Suggestion chips */}
-                                    <div className="grid grid-cols-2 gap-3 w-full max-w-2xl">
+                                    <div className="flex flex-wrap justify-center gap-2 w-full max-w-xl">
                                         {SUGGESTION_CHIPS.map((chip, i) => (
                                             <motion.button
                                                 key={i}
+                                                whileHover={{ y: -2 }}
                                                 initial={{ opacity: 0, y: 8 }}
                                                 animate={{ opacity: 1, y: 0 }}
-                                                transition={{ delay: i * 0.07 }}
+                                                transition={{ delay: i * 0.05 }}
                                                 onClick={() => handleSend(chip.prompt)}
-                                                className="flex items-start gap-3 p-4 rounded-xl border border-surface-border bg-surface-card hover:border-brand-primary/40 hover:bg-brand-primary/5 transition-all text-left group"
+                                                className="flex items-center gap-2.5 px-5 py-3 rounded-2xl border border-surface-border/60 bg-surface-sidebar/30 hover:border-brand-primary/40 hover:bg-surface-card hover:shadow-lg hover:shadow-brand-primary/5 transition-all text-left group"
                                             >
-                                                <span className="text-xl shrink-0 mt-0.5">{chip.icon}</span>
-                                                <div>
-                                                    <p className="text-sm font-semibold text-text-main group-hover:text-brand-primary transition-colors">{chip.label}</p>
-                                                    <p className="text-[12px] text-text-muted mt-0.5 line-clamp-2">{chip.prompt}</p>
-                                                </div>
+                                                <span className="text-lg shrink-0 grayscale group-hover:grayscale-0 transition-all">{chip.icon}</span>
+                                                <span className="text-sm font-bold text-text-muted group-hover:text-text-main transition-colors">{chip.label}</span>
                                             </motion.button>
                                         ))}
                                     </div>
