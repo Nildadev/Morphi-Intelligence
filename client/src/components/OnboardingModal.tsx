@@ -111,21 +111,30 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({ isOpen, onClos
     };
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+        <div className="fixed inset-0 z-[500] flex items-center justify-center p-4">
+            <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={onClose}
+                className="absolute inset-0 bg-black/40 dark:bg-black/80 backdrop-blur-xl"
+            />
             <motion.div
                 initial={{ opacity: 0, scale: 0.95, y: 10 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.95, y: 10 }}
-                className="bg-surface-bg border border-surface-border w-full max-w-2xl rounded-2xl shadow-2xl overflow-hidden flex flex-col"
+                className="bg-surface-card border border-white/10 w-full max-w-2xl rounded-[32px] shadow-2xl overflow-hidden flex flex-col relative z-10"
             >
                 {/* Header */}
-                <div className="flex justify-between items-center p-4 border-b border-surface-border">
-                    <div className="flex items-center gap-2">
-                        {slide.icon}
-                        <h2 className="text-lg font-bold text-text-main">Getting Started</h2>
+                <div className="flex justify-between items-center px-10 py-8 border-b border-white/5 bg-gradient-to-br from-brand-primary/10 via-transparent to-transparent">
+                    <div className="flex items-center gap-3">
+                        <div className="p-2 bg-brand-primary/20 rounded-xl text-brand-primary">
+                            {slide.icon}
+                        </div>
+                        <h2 className="text-xl font-bold text-text-main tracking-tight">Getting Started</h2>
                     </div>
-                    <button onClick={onClose} className="p-1 rounded-lg text-text-muted hover:text-text-main hover:bg-surface-border/50 transition-all">
-                        <X size={20} />
+                    <button onClick={onClose} className="p-3 hover:bg-white/5 rounded-2xl transition-all text-text-muted hover:text-text-main group">
+                        <X size={24} className="group-hover:rotate-90 transition-transform duration-300" />
                     </button>
                 </div>
 
@@ -150,7 +159,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({ isOpen, onClos
                 </div>
 
                 {/* Footer Controls */}
-                <div className="flex items-center justify-between p-4 border-t border-surface-border bg-surface-sidebar">
+                <div className="flex items-center justify-between px-10 py-6 border-t border-white/5 bg-black/20">
                     {/* Dots indicator */}
                     <div className="flex items-center gap-2 pl-2">
                         {SLIDES.map((_, i) => (

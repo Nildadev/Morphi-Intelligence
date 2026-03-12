@@ -88,71 +88,84 @@ export const Sidebar: React.FC<SidebarProps> = ({
             transition={{ type: 'spring', stiffness: 300, damping: 30 }}
             className="h-screen bg-surface-sidebar flex flex-col border-r border-surface-border z-20 overflow-hidden shrink-0"
         >
-            {/* Top area: logo + collapse button */}
-            <div className="flex items-center justify-between px-3 pt-4 pb-3 shrink-0">
+            {/* Top area: Minimalist Logo */}
+            <div className={`flex items-center pt-6 pb-4 shrink-0 transition-all ${collapsed ? 'flex-col px-0 gap-4' : 'justify-between px-4'}`}>
                 <AnimatePresence>
                     {!collapsed && (
                         <motion.div
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                            exit={{ opacity: 0 }}
-                            transition={{ duration: 0.15 }}
-                            className="flex items-center gap-2.5 overflow-hidden"
+                            initial={{ opacity: 0, x: -10 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            exit={{ opacity: 0, x: -10 }}
+                            className="flex items-center gap-3 overflow-hidden"
                         >
-                            <div className="h-7 w-7 rounded-lg bg-brand-primary flex items-center justify-center shadow-lg shadow-brand-primary/30 shrink-0">
-                                <Sparkles size={14} className="text-white" />
+                            <div className="h-8 w-8 rounded-xl bg-gradient-to-br from-brand-primary to-brand-hover flex items-center justify-center shadow-lg shadow-brand-primary/20 shrink-0">
+                                <Sparkles size={16} className="text-white" />
                             </div>
-                            <div className="min-w-0">
-                                <span className="text-text-main font-bold text-[15px] leading-none">Morphi</span>
-                                <span className="text-[9px] text-brand-primary font-bold uppercase tracking-widest block mt-0.5">Intelligence</span>
+                            <div className="flex flex-col">
+                                <span className="text-text-main font-black text-[16px] tracking-tight leading-none">Morphi</span>
+                                <span className="text-[9px] text-text-muted/60 font-bold uppercase tracking-[0.2em] mt-1">Intelli 1.0</span>
                             </div>
                         </motion.div>
                     )}
                 </AnimatePresence>
-                {collapsed && (
-                    <div className="h-7 w-7 rounded-lg bg-brand-primary flex items-center justify-center shadow-lg shadow-brand-primary/30 mx-auto">
-                        <Sparkles size={14} className="text-white" />
+                
+                {collapsed ? (
+                    <div className="flex flex-col items-center gap-4">
+                        <div className="h-8 w-8 rounded-xl bg-brand-primary flex items-center justify-center shadow-lg shadow-brand-primary/20 shrink-0">
+                            <Sparkles size={16} className="text-white" />
+                        </div>
+                        <button
+                            onClick={() => setCollapsed(false)}
+                            className="btn-ghost p-1.5"
+                            title="Expand sidebar"
+                        >
+                            <PanelLeftOpen size={18} />
+                        </button>
                     </div>
-                )}
-                {!collapsed && (
+                ) : (
                     <button
                         onClick={() => setCollapsed(true)}
-                        className="p-1.5 rounded-md text-text-muted hover:text-text-main hover:bg-surface-border/50 transition-all"
+                        className="btn-ghost"
                         title="Collapse sidebar"
                     >
-                        <PanelLeftClose size={16} />
+                        <PanelLeftClose size={18} />
                     </button>
                 )}
             </div>
 
-            {/* Expand button when collapsed */}
-            {collapsed && (
-                <button
-                    onClick={() => setCollapsed(false)}
-                    className="mx-auto p-1.5 rounded-md text-text-muted hover:text-text-main hover:bg-surface-border/50 transition-all mb-1"
-                    title="Expand sidebar"
-                >
-                    <PanelLeftOpen size={16} />
-                </button>
-            )}
-
-            {/* New Chat button */}
-            <div className={`px-2 pb-2 shrink-0 ${collapsed ? 'flex justify-center' : ''}`}>
-                <button
-                    onClick={onNewSession}
-                    title="New Chat"
-                    className={`flex items-center gap-2 rounded-lg text-sm font-medium transition-all active:scale-95
-                        ${collapsed
-                            ? 'p-2 text-text-muted hover:text-brand-primary hover:bg-surface-border/40'
-                            : 'w-full px-3 py-2 text-text-muted hover:text-text-main hover:bg-surface-border/40'
-                        }`}
-                >
-                    <Plus size={16} className={collapsed ? '' : 'shrink-0'} />
-                    {!collapsed && <span>New Chat</span>}
-                </button>
+            {/* Actions Area */}
+            <div className={`${collapsed ? 'px-2' : 'px-3'} pb-4 flex flex-col gap-1 shrink-0`}>
+                {!collapsed ? (
+                    <div className="flex gap-2">
+                        <button
+                            onClick={onNewSession}
+                            className="flex-1 bg-text-main text-surface-bg hover:opacity-90 transition-all font-bold px-4 py-2.5 rounded-2xl flex items-center justify-center gap-2 shadow-sm text-sm active:scale-[0.98]"
+                        >
+                            <Plus size={18} />
+                            <span>Chat</span>
+                        </button>
+                        <button
+                            onClick={onNewProject}
+                            className="w-11 h-11 border border-surface-border rounded-2xl flex items-center justify-center text-text-muted hover:text-text-main hover:bg-surface-border/40 transition-all flex-shrink-0"
+                            title="New Project"
+                        >
+                            <Folder size={18} />
+                        </button>
+                    </div>
+                ) : (
+                    <div className="flex flex-col items-center gap-3">
+                        <button onClick={onNewSession} className="h-9 w-9 bg-text-main text-surface-bg rounded-xl flex items-center justify-center hover:opacity-90 transition-all shrink-0" title="New Chat">
+                            <Plus size={18} />
+                        </button>
+                        <button onClick={onNewProject} className="h-9 w-9 border border-surface-border text-text-muted rounded-xl flex items-center justify-center hover:bg-surface-border/40 hover:text-text-main transition-all shrink-0" title="New Project">
+                            <Folder size={18} />
+                        </button>
+                        <div className="w-6 h-[1px] bg-surface-border/50 my-1" />
+                    </div>
+                )}
             </div>
 
-            <div className="h-px bg-surface-border mx-2 mb-2 shrink-0" />
+            <div className="h-px bg-surface-border/40 mx-4 mb-4 shrink-0" />
 
             {/* Scrollable project/session list */}
             <div className="flex-1 overflow-y-auto sidebar-scrollbar px-2 space-y-0.5">
@@ -163,46 +176,40 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 )}
 
                 {projects.map(project => {
-                    const projectSessions = sortedSessions; // In real app, filter by projectId
+                    const projectSessions = sortedSessions;
                     const isExpanded = expandedProjects[project.id] ?? (project.id === currentProjectId);
                     const isActive = project.id === currentProjectId;
 
                     return (
-                        <div key={project.id}>
+                        <div key={project.id} className="mb-1">
                             {/* Project header */}
                             {!collapsed ? (
-                                <div className="group flex items-center gap-1 px-2 py-1.5 rounded-lg cursor-pointer hover:bg-surface-border/30 transition-all"
+                                <div className={`group flex items-center gap-1.5 px-3 py-2 rounded-xl cursor-pointer transition-all duration-300 ${isActive ? 'bg-brand-primary/5 text-brand-primary' : 'text-text-muted hover:bg-surface-border/20'}`}
                                     onClick={() => { onSelectProject(project.id); toggleProject(project.id); }}
                                 >
-                                    <FolderOpen size={14} className={isActive ? 'text-brand-primary shrink-0' : 'text-text-muted shrink-0'} />
-                                    <span className={`flex-1 text-[12px] font-semibold truncate ${isActive ? 'text-brand-primary' : 'text-text-muted'}`}>
+                                    <div className={`p-1 rounded-lg ${isActive ? 'bg-brand-primary/10' : 'bg-transparent text-text-muted/40'}`}>
+                                        <FolderOpen size={14} />
+                                    </div>
+                                    <span className={`flex-1 text-[13px] font-bold truncate tracking-tight ${isActive ? 'text-brand-primary' : 'text-text-muted/80'}`}>
                                         {project.name}
                                     </span>
                                     <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
                                         <button
-                                            onClick={(e) => { e.stopPropagation(); onNewSession(); }}
-                                            className="p-1 rounded hover:text-brand-primary hover:bg-brand-primary/10 transition-all"
-                                            title="New chat in project"
-                                        >
-                                            <Plus size={12} />
-                                        </button>
-                                        <button
                                             onClick={(e) => { e.stopPropagation(); onDeleteProject(project.id); }}
                                             className="p-1 rounded hover:text-red-500 hover:bg-red-500/10 transition-all"
-                                            title="Delete project"
                                         >
                                             <Trash2 size={12} />
                                         </button>
                                     </div>
-                                    <ChevronRight size={12} className={`text-text-muted transition-transform shrink-0 ${isExpanded ? 'rotate-90' : ''}`} />
+                                    <ChevronRight size={12} className={`text-text-muted/40 transition-transform shrink-0 ${isExpanded ? 'rotate-90' : ''}`} />
                                 </div>
                             ) : (
                                 <button
                                     onClick={() => { onSelectProject(project.id); }}
                                     title={project.name}
-                                    className={`w-full flex justify-center p-2 rounded-lg transition-all ${isActive ? 'text-brand-primary bg-brand-primary/10' : 'text-text-muted hover:bg-surface-border/40 hover:text-text-main'}`}
+                                    className={`w-full flex justify-center p-2.5 rounded-xl transition-all ${isActive ? 'text-brand-primary bg-brand-primary/10' : 'text-text-muted/40 hover:bg-surface-border/40 hover:text-text-main'}`}
                                 >
-                                    <FolderOpen size={16} />
+                                    <FolderOpen size={18} />
                                 </button>
                             )}
 
@@ -213,31 +220,28 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                         initial={{ opacity: 0, height: 0 }}
                                         animate={{ opacity: 1, height: 'auto' }}
                                         exit={{ opacity: 0, height: 0 }}
-                                        className="ml-3 pl-2 border-l border-surface-border space-y-0.5 mb-1 mt-0.5"
+                                        className="ml-5 pl-4 border-l-2 border-surface-border/50 space-y-1 mb-2 mt-1"
                                     >
                                         {projectSessions.length === 0 ? (
-                                            <p className="text-[11px] text-text-muted px-2 py-2 italic">No conversations yet</p>
+                                            <p className="text-[11px] text-text-muted/40 px-2 py-2 font-medium">No sessions...</p>
                                         ) : (
                                             projectSessions.map(session => (
                                                 <motion.div
                                                     key={session.id}
-                                                    initial={{ opacity: 0, x: -4 }}
-                                                    animate={{ opacity: 1, x: 0 }}
-                                                    exit={{ opacity: 0, x: -4 }}
                                                     onClick={() => onSelectSession(session.id)}
-                                                    className={`group w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-[13px] transition-all cursor-pointer
+                                                    className={`group w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-[13px] transition-all cursor-pointer font-medium
                                                         ${currentSessionId === session.id
-                                                            ? 'bg-surface-border text-text-main font-medium'
-                                                            : 'text-text-muted hover:bg-surface-border/30 hover:text-text-main'
+                                                            ? 'bg-surface-card border border-surface-border/50 text-text-main shadow-sm'
+                                                            : 'text-text-muted/70 hover:text-text-main hover:bg-surface-border/20'
                                                         }`}
                                                 >
-                                                    {session.isPinned && <Pin size={10} className="text-brand-primary shrink-0" />}
+                                                    {session.isPinned && <Pin size={11} className="text-brand-primary shrink-0" />}
                                                     <span className="flex-1 truncate">{session.title || 'Untitled'}</span>
                                                     <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-                                                        <button onClick={(e) => onTogglePin(session.id, e)} className="p-0.5 rounded hover:text-brand-primary transition-all">
+                                                        <button onClick={(e) => onTogglePin(session.id, e)} className="p-1 rounded hover:text-brand-primary transition-all">
                                                             {session.isPinned ? <PinOff size={11} /> : <Pin size={11} />}
                                                         </button>
-                                                        <button onClick={(e) => onDeleteSession(session.id, e)} className="p-0.5 rounded hover:text-red-500 transition-all">
+                                                        <button onClick={(e) => onDeleteSession(session.id, e)} className="p-1 rounded hover:text-red-500 transition-all">
                                                             <Trash2 size={11} />
                                                         </button>
                                                     </div>
@@ -250,64 +254,46 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         </div>
                     );
                 })}
-
-                {/* New Project button */}
-                {!collapsed && (
-                    <button
-                        onClick={onNewProject}
-                        className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-[12px] text-text-muted hover:text-text-main hover:bg-surface-border/30 transition-all mt-2"
-                    >
-                        <Plus size={13} />
-                        <span>New Project</span>
-                    </button>
-                )}
-                {collapsed && (
-                    <button
-                        onClick={onNewProject}
-                        title="New Project"
-                        className="w-full flex justify-center p-2 rounded-lg text-text-muted hover:bg-surface-border/40 hover:text-text-main transition-all"
-                    >
-                        <Folder size={16} />
-                    </button>
-                )}
             </div>
 
-            {/* Bottom actions */}
-            <div className={`shrink-0 border-t border-surface-border p-2 space-y-0.5 ${collapsed ? 'flex flex-col items-center' : ''}`}>
-                <button
-                    onClick={toggleTheme}
-                    title={isDark ? 'Light Mode' : 'Dark Mode'}
-                    className={`flex items-center gap-2.5 rounded-lg text-text-muted hover:text-text-main hover:bg-surface-border/30 transition-all text-[13px]
-                        ${collapsed ? 'p-2' : 'w-full px-3 py-2'}`}
-                >
-                    {isDark ? <Sun size={15} /> : <Moon size={15} />}
-                    {!collapsed && (isDark ? 'Light Mode' : 'Dark Mode')}
-                </button>
-                <button
-                    onClick={onOpenMemory}
-                    title="Memory Engine"
-                    className={`flex items-center gap-2.5 rounded-lg text-text-muted hover:text-text-main hover:bg-surface-border/30 transition-all text-[13px]
-                        ${collapsed ? 'p-2' : 'w-full px-3 py-2'}`}
-                >
-                    <Database size={15} />
-                    {!collapsed && 'Memory Engine'}
-                </button>
-                <button
-                    onClick={onOpenSettings}
-                    title="Settings"
-                    className={`flex items-center gap-2.5 rounded-lg text-text-muted hover:text-text-main hover:bg-surface-border/30 transition-all text-[13px]
-                        ${collapsed ? 'p-2' : 'w-full px-3 py-2'}`}
-                >
-                    <Settings2 size={15} />
-                    {!collapsed && 'Settings'}
-                </button>
-
+            {/* Bottom actions: Glassy Panel */}
+            <div className={`shrink-0 border-t border-surface-border/40 p-3 space-y-1 bg-surface-sidebar/50 ${collapsed ? 'flex flex-col items-center' : ''}`}>
+                <div className={`${collapsed ? 'flex flex-col gap-2' : 'grid grid-cols-2 gap-1'}`}>
+                    <button
+                        onClick={toggleTheme}
+                        title={isDark ? 'Light' : 'Dark'}
+                        className={`btn-ghost justify-center flex items-center gap-2 ${collapsed ? '' : 'text-[11px] font-bold uppercase tracking-wider'}`}
+                    >
+                        {isDark ? <Sun size={15} /> : <Moon size={15} />}
+                        {!collapsed && (isDark ? 'Light' : 'Dark')}
+                    </button>
+                    <button
+                        onClick={onOpenSettings}
+                        title="Settings"
+                        className={`btn-ghost justify-center flex items-center gap-2 ${collapsed ? '' : 'text-[11px] font-bold uppercase tracking-wider'}`}
+                    >
+                        <Settings2 size={15} />
+                        {!collapsed && 'Settings'}
+                    </button>
+                </div>
+                
                 {!collapsed && (
-                    <div className="px-3 pt-3 flex items-center justify-between text-[9px] font-bold text-text-muted/50 uppercase tracking-wider">
-                        <span>Morphi v1.0.3 preview beta</span>
-                        <span className="flex items-center gap-1">
-                            <span className="h-1 w-1 rounded-full bg-brand-primary animate-pulse" /> Online
-                        </span>
+                    <div className="pt-4 flex flex-col gap-3">
+                         <button
+                            onClick={onOpenMemory}
+                            className="w-full btn-ghost border border-surface-border/50 bg-surface-card/30 flex items-center gap-3 px-4 py-2.5 rounded-2xl shadow-sm text-[12px] font-bold text-text-muted/80"
+                        >
+                            <Database size={15} className="text-brand-primary" />
+                            Memory Engine
+                        </button>
+
+                        <div className="px-1 flex items-center justify-between text-[10px] font-black text-text-muted/30 uppercase tracking-[0.2em]">
+                            <span>Stable Build</span>
+                            <span className="flex items-center gap-1.5">
+                                <span className="h-1.5 w-1.5 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]" /> 
+                                Local
+                            </span>
+                        </div>
                     </div>
                 )}
             </div>

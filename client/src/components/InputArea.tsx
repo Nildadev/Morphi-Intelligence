@@ -101,33 +101,34 @@ export const InputArea: React.FC<InputAreaProps> = ({ onSend, onStop, disabled }
             <div className="relative flex flex-col bg-surface-card border border-surface-border rounded-2xl shadow-sm focus-within:border-brand-primary/50 focus-within:shadow-[0_0_0_3px_rgba(16,163,127,0.08)] transition-all duration-200">
 
                 {/* Text input row */}
-                <div className="flex items-end px-4 pt-3 pb-1">
+                <div className="flex items-end px-5 pt-4 pb-2">
                     <textarea
                         ref={textareaRef}
                         value={text}
                         onChange={(e) => { setText(e.target.value); adjustHeight(); }}
                         onKeyDown={handleKeyDown}
-                        placeholder="Ask Morphi anything…"
+                        placeholder="Message Morphi..."
                         rows={1}
                         disabled={disabled}
-                        className="flex-1 bg-transparent border-0 focus:ring-0 resize-none text-text-main placeholder:text-text-muted text-[15px] leading-relaxed max-h-[200px] custom-scrollbar py-1"
+                        className="flex-1 bg-transparent border-0 focus:ring-0 resize-none text-text-main placeholder:text-text-muted/40 text-[16px] leading-[1.6] max-h-[200px] custom-scrollbar py-1"
                     />
                 </div>
 
                 {/* Bottom toolbar */}
-                <div className="flex items-center justify-between px-3 pb-2.5 pt-1">
+                <div className="flex items-center justify-between px-4 pb-3.5 pt-1">
                     {/* Left: model selector */}
-                    <div className="flex items-center gap-1" ref={menuRef}>
+                    <div className="flex items-center gap-2" ref={menuRef}>
                         <div className="relative">
                             <button
                                 onClick={() => setIsModelMenuOpen(v => !v)}
-                                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg hover:bg-surface-sidebar text-[12px] font-semibold text-text-muted hover:text-text-main transition-all"
+                                className={`flex items-center gap-2 px-3 py-2 rounded-xl border border-surface-border text-[11px] font-bold uppercase tracking-wider transition-all
+                                    ${isModelMenuOpen ? 'bg-surface-sidebar border-brand-primary/40 text-brand-primary shadow-inner' : 'bg-surface-sidebar/50 text-text-muted hover:text-text-main hover:bg-surface-sidebar'}`}
                             >
                                 {activeModel?.logo && (
-                                    <img src={activeModel.logo} alt="" className="w-4 h-4 rounded-sm" onError={e => (e.currentTarget.style.display = 'none')} />
+                                    <img src={activeModel.logo} alt="" className="w-3.5 h-3.5 rounded-sm dark:brightness-0 dark:invert opacity-60" onError={e => (e.currentTarget.style.display = 'none')} />
                                 )}
-                                <span className="max-w-[110px] truncate">{activeModel?.name || 'Select model'}</span>
-                                <ChevronDown size={12} className={`transition-transform ${isModelMenuOpen ? 'rotate-180' : ''}`} />
+                                <span className="max-w-[120px] truncate">{activeModel?.name || 'Model'}</span>
+                                <ChevronDown size={12} className={`opacity-40 transition-transform ${isModelMenuOpen ? 'rotate-180' : ''}`} />
                             </button>
 
                             <AnimatePresence>
@@ -173,7 +174,7 @@ export const InputArea: React.FC<InputAreaProps> = ({ onSend, onStop, disabled }
                                                         className={`w-full flex items-center gap-3 px-3 py-2 text-[13px] transition-all text-left
                                                             ${selectedModel === m.id ? 'bg-brand-primary/10 text-brand-primary' : 'text-text-muted hover:bg-surface-sidebar hover:text-text-main'}`}
                                                     >
-                                                        {m.logo && <img src={m.logo} alt="" className="w-4 h-4 rounded-sm shrink-0 bg-white/5 p-0.5" onError={e => (e.currentTarget.style.display = 'none')} />}
+                                                        {m.logo && <img src={m.logo} alt="" className="w-4 h-4 rounded-sm shrink-0 bg-white/5 p-0.5 dark:brightness-0 dark:invert opacity-70" onError={e => (e.currentTarget.style.display = 'none')} />}
                                                         <div className="flex-1 min-w-0">
                                                             <p className="font-semibold truncate">{m.name}</p>
                                                             {m.description && <p className="text-[10px] opacity-60 truncate">{m.description}</p>}
@@ -194,12 +195,14 @@ export const InputArea: React.FC<InputAreaProps> = ({ onSend, onStop, disabled }
                         {/* Extended thinking toggle */}
                         <button
                             onClick={() => setIsExtendedThinking(v => !v)}
-                            title={isExtendedThinking ? 'Extended thinking ON' : 'Extended thinking OFF'}
-                            className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-[12px] font-semibold transition-all
-                                ${isExtendedThinking ? 'text-brand-primary bg-brand-primary/10' : 'text-text-muted hover:text-text-main hover:bg-surface-sidebar'}`}
+                            title={isExtendedThinking ? 'Thinking Mode ON' : 'Thinking Mode OFF'}
+                            className={`flex items-center gap-2 px-3 py-2 rounded-xl text-[11px] font-bold uppercase tracking-wider transition-all border
+                                ${isExtendedThinking 
+                                    ? 'text-brand-primary bg-brand-primary/10 border-brand-primary/20' 
+                                    : 'text-text-muted bg-surface-sidebar/50 border-surface-border hover:text-text-main hover:bg-surface-sidebar'}`}
                         >
-                            <Brain size={14} />
-                            {isExtendedThinking && <span className="text-[11px]">Deep</span>}
+                            <Brain size={13} />
+                            {isExtendedThinking ? <span>Deep</span> : <span>Fast</span>}
                         </button>
                     </div>
 
@@ -209,18 +212,18 @@ export const InputArea: React.FC<InputAreaProps> = ({ onSend, onStop, disabled }
                             <button
                                 onClick={handleSend}
                                 disabled={!text.trim()}
-                                className={`h-8 w-8 rounded-lg flex items-center justify-center transition-all
-                                    ${text.trim() ? 'bg-text-main text-surface-bg hover:opacity-85 active:scale-95' : 'bg-surface-border/50 text-text-muted cursor-not-allowed opacity-40'}`}
+                                className={`h-10 w-10 rounded-xl flex items-center justify-center transition-all shadow-lg
+                                    ${text.trim() ? 'bg-text-main text-surface-bg hover:opacity-90 active:scale-95 shadow-text-main/10' : 'bg-surface-border/50 text-text-muted cursor-not-allowed opacity-40 shadow-none'}`}
                             >
-                                <Send size={15} />
+                                <Send size={18} />
                             </button>
                         ) : (
                             <button
                                 onClick={onStop}
-                                className="h-8 w-8 rounded-lg bg-text-main text-surface-bg hover:opacity-80 flex items-center justify-center transition-all active:scale-95"
+                                className="h-10 w-10 rounded-xl bg-text-main text-surface-bg hover:opacity-90 flex items-center justify-center transition-all active:scale-95 shadow-lg shadow-text-main/10"
                                 title="Stop generating"
                             >
-                                <Square size={13} fill="currentColor" />
+                                <Square size={14} fill="currentColor" />
                             </button>
                         )}
                     </div>

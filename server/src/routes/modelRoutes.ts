@@ -14,4 +14,14 @@ router.get('/', async (req, res) => {
   }
 });
 
+router.get('/providers', async (req, res) => {
+  try {
+    const providers = await llmManager.getProviders();
+    res.json(providers);
+  } catch (error) {
+    console.error('Provider fetch error:', error);
+    res.status(500).json({ error: 'Failed to fetch providers' });
+  }
+});
+
 export default router;

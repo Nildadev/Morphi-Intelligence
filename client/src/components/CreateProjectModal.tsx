@@ -31,14 +31,14 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({ isOpen, 
     return (
         <AnimatePresence>
             {isOpen && (
-                <div className="fixed inset-0 z-[250] flex items-center justify-center p-4">
+                <div className="fixed inset-0 z-[500] flex items-center justify-center p-4">
                     <motion.div
                         key="create-backdrop"
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
                         onClick={onClose}
-                        className="absolute inset-0 bg-black/20 dark:bg-black/60 backdrop-blur-md"
+                        className="absolute inset-0 bg-black/40 dark:bg-black/80 backdrop-blur-xl"
                     />
 
                     <motion.div
@@ -46,7 +46,7 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({ isOpen, 
                         initial={{ opacity: 0, scale: 0.98, y: 10 }}
                         animate={{ opacity: 1, scale: 1, y: 0 }}
                         exit={{ opacity: 0, scale: 0.98, y: 10 }}
-                        className="relative w-full max-w-md bg-surface-card border border-surface-border rounded-[24px] shadow-2xl overflow-hidden"
+                        className="relative w-full max-w-md bg-surface-card border border-white/10 rounded-[32px] shadow-2xl overflow-hidden"
                     >
                         <form onSubmit={handleSubmit} className="p-8 space-y-8">
                             <div className="flex items-center justify-between">
