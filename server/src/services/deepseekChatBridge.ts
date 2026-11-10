@@ -65,12 +65,22 @@ export function bridgeBaseUrlOf(stored: string | undefined): string {
 }
 
 /**
+ * The bridge mounts `/healthz` at the server ROOT, not under `/v1` (app.py registers it before the
+ * OpenAI router), so the probe must strip any `/v1` prefix off the base URL — probing
+ * `/v1/healthz` on a live bridge is a 404 that reads as "unreachable" (caught live: bridge running,
+ * Morphi claiming it was down).
+ */
+function bridgeHealthUrl(baseUrl: string): string {
+  return `${new URL(baseUrl).origin}/healthz`;
+}
+
+/**
  * `GET /healthz` — rate-limit exempt by the bridge's own design, so it is the honest liveness probe.
  */
 export async function probeBridge(stored: string | undefined): Promise<BridgeStatus> {
   const baseUrl = bridgeBaseUrlOf(stored);
   try {
-    const response = await fetch(`${baseUrl}/healthz`, { signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) });
+    const response = await fetch(bridgeHealthUrl(baseUrl), { signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) });
     if (!response.ok) {
       return { state: 'unreachable', baseUrl, detail: `HTTP ${response.status} ${response.statusText}`.trim() };
     }

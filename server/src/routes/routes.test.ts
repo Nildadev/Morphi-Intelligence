@@ -583,8 +583,8 @@ describe('providers routes', () => {
       expect(res.status).toBe(200);
       expect(res.body).toMatchObject({ state: 'unreachable', baseUrl: 'http://127.0.0.1:8000/v1' });
       // Health check only: a `chat/completions` request here would spend the account's rate limit
-      // on a liveness question.
-      expect(fetchMock.mock.calls.map((call) => String(call[0]))).toEqual(['http://127.0.0.1:8000/v1/healthz']);
+      // on a liveness question. `/healthz` sits at the server root — the `/v1` prefix is stripped.
+      expect(fetchMock.mock.calls.map((call) => String(call[0]))).toEqual(['http://127.0.0.1:8000/healthz']);
     } finally {
       vi.unstubAllGlobals();
     }

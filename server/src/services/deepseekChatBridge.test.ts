@@ -4,7 +4,8 @@ import { BRIDGE_PROVIDER_IDS, bridgeBaseUrlOf, connectBridge, probeBridge } from
 /**
  * The bridge has no login endpoint (sign-in is `python -m deepseek.auth`, a visible browser), so
  * "connect" means asking it for one tiny completion and reading what it says. These tests stub the
- * two fetch surfaces: `/healthz` (liveness) and `/v1/chat/completions` (session).
+ * two fetch surfaces: `/healthz` (liveness, mounted at the server ROOT — not under `/v1`, which a
+ * live bridge answers 404) and `/v1/chat/completions` (session).
  */
 function stub(routes: Record<string, { ok?: boolean; status?: number; statusText?: string; json?: unknown; reject?: boolean }>) {
   const calls: Array<{ url: string; body?: Record<string, unknown> }> = [];
@@ -24,6 +25,8 @@ function stub(routes: Record<string, { ok?: boolean; status?: number; statusText
 }
 
 const BRIDGE = 'http://127.0.0.1:8000/v1';
+/** The liveness probe strips the `/v1` prefix: `/healthz` lives at the server root (app.py). */
+const ORIGIN = 'http://127.0.0.1:8000';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -42,16 +45,16 @@ describe('deepseekChatBridge', () => {
   });
 
   it('reports a live bridge without touching the account', async () => {
-    const calls = stub({ [`${BRIDGE}/healthz`]: { json: { status: 'ok' } } });
+    const calls = stub({ [`${ORIGIN}/healthz`]: { json: { status: 'ok' } } });
 
     await expect(probeBridge(undefined)).resolves.toEqual({ state: 'reachable', baseUrl: BRIDGE });
     // Reachability proves nothing about the session, so the probe must stop at healthz: a
     // completion request would spend the account's rate limit on a status question.
-    expect(calls.map((call) => call.url)).toEqual([`${BRIDGE}/healthz`]);
+    expect(calls.map((call) => call.url)).toEqual([`${ORIGIN}/healthz`]);
   });
 
   it('reports an unreachable bridge with the reason', async () => {
-    const calls = stub({ [`${BRIDGE}/healthz`]: { reject: true } });
+    const calls = stub({ [`${ORIGIN}/healthz`]: { reject: true } });
 
     const status = await probeBridge(undefined);
     expect(status.state).toBe('unreachable');
@@ -60,14 +63,14 @@ describe('deepseekChatBridge', () => {
   });
 
   it('counts a non-ok healthz as unreachable rather than healthy', async () => {
-    stub({ [`${BRIDGE}/healthz`]: { status: 503, statusText: 'Service Unavailable', json: { detail: 'login_required' } } });
+    stub({ [`${ORIGIN}/healthz`]: { status: 503, statusText: 'Service Unavailable', json: { detail: 'login_required' } } });
 
     await expect(probeBridge(undefined)).resolves.toMatchObject({ state: 'unreachable', detail: 'HTTP 503 Service Unavailable' });
   });
 
   it('answers connected on a 200 completion', async () => {
     const calls = stub({
-      [`${BRIDGE}/healthz`]: { json: { status: 'ok' } },
+      [`${ORIGIN}/healthz`]: { json: { status: 'ok' } },
       [`${BRIDGE}/chat/completions`]: { json: { choices: [{ message: { content: 'hi' } }] } },
     });
 
@@ -79,7 +82,7 @@ describe('deepseekChatBridge', () => {
 
   it('surfaces the bridge instructions when it refuses to open a login window', async () => {
     stub({
-      [`${BRIDGE}/healthz`]: { json: { status: 'ok' } },
+      [`${ORIGIN}/healthz`]: { json: { status: 'ok' } },
       // The 503 `server/api.py` answers when SERVER_INTERACTIVE_LOGIN=0.
       [`${BRIDGE}/chat/completions`]: {
         status: 503,
@@ -94,7 +97,7 @@ describe('deepseekChatBridge', () => {
 
   it('keeps a login_required message even when only the status gives it away', async () => {
     stub({
-      [`${BRIDGE}/healthz`]: { json: { status: 'ok' } },
+      [`${ORIGIN}/healthz`]: { json: { status: 'ok' } },
       [`${BRIDGE}/chat/completions`]: { status: 503, json: {} },
     });
 
@@ -103,7 +106,7 @@ describe('deepseekChatBridge', () => {
 
   it('asks the user to check again when the bridge stops answering mid-login', async () => {
     stub({
-      [`${BRIDGE}/healthz`]: { json: { status: 'ok' } },
+      [`${ORIGIN}/healthz`]: { json: { status: 'ok' } },
       [`${BRIDGE}/chat/completions`]: { reject: true },
     });
 
@@ -113,7 +116,7 @@ describe('deepseekChatBridge', () => {
   });
 
   it('never spends a completion when the bridge is down', async () => {
-    const calls = stub({ [`${BRIDGE}/healthz`]: { reject: true } });
+    const calls = stub({ [`${ORIGIN}/healthz`]: { reject: true } });
 
     const result = await connectBridge(undefined);
     expect(result.state).toBe('unreachable');
@@ -123,12 +126,14 @@ describe('deepseekChatBridge', () => {
 
   it('honours a stored endpoint for both probes', async () => {
     const other = 'http://127.0.0.1:8001/v1';
+    const otherOrigin = 'http://127.0.0.1:8001';
     const calls = stub({
-      [`${other}/healthz`]: { json: { status: 'ok' } },
+      [`${otherOrigin}/healthz`]: { json: { status: 'ok' } },
       [`${other}/chat/completions`]: { json: { choices: [{ message: { content: 'hi' } }] } },
     });
 
     await connectBridge(other);
-    expect(calls.map((call) => call.url)).toEqual([`${other}/healthz`, `${other}/chat/completions`]);
+    // healthz follows the stored host too — at its root, `/v1` stripped.
+    expect(calls.map((call) => call.url)).toEqual([`${otherOrigin}/healthz`, `${other}/chat/completions`]);
   });
 });
