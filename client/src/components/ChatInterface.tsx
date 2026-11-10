@@ -7,6 +7,8 @@ import { Composer } from './chat/Composer';
 import { Sidebar, readSidebarCollapsed, writeSidebarCollapsed } from './layout/Sidebar';
 import { SearchPalette } from './layout/SearchPalette';
 import { AppShell, DESKTOP_QUERY, useMediaQuery } from './layout/AppShell';
+import { SidePanel } from './layout/SidePanel';
+import { ChildSessionPanel } from './chat/ChildSessionPanel';
 import { Rail, type RailAction } from './layout/Rail';
 import { SettingsModal, type SettingsTab } from './settings/SettingsModal';
 import { CreateProjectModal } from './CreateProjectModal';
@@ -88,6 +90,14 @@ export const ChatInterface: React.FC = () => {
         }));
     };
     const [chat, dispatch] = useReducer(chatReducer, initialChatState);
+    /**
+     * Docked right-hand panel for a subagent child session. Opening it must NOT touch the main
+     * pane: the parent transcript keeps its scroll, its live draft and its running stream.
+     */
+    const [sidePanel, setSidePanel] = useState<{ title: string; childSessionId: string } | null>(null);
+    const [childDetail, setChildDetail] = useState<SessionDetail | null>(null);
+    const [childLoading, setChildLoading] = useState(false);
+    const [childFailed, setChildFailed] = useState(false);
     /**
      * Sessions with a live turn. Deepseek-style: a turn belongs to its session, not to the pane —
      * switching chats keeps the SSE open and the server keeps producing. `streaming` below is only
@@ -468,6 +478,44 @@ export const ChatInterface: React.FC = () => {
         recordNavigation(activeSessionIdRef.current, id);
         void openSession(id);
     };
+
+    /**
+     * Opens a child session in the docked side panel. The existing entry points (the subagent row
+     * and the header's team menu) used to swap the main pane; that would discard the parent's
+     * scroll position and hide the turn the child belongs to, so they now fill the panel instead.
+     * The main transcript — and any turn still streaming into it — is left untouched.
+     */
+    const handleOpenChildSession = useCallback((childSessionId: string) => {
+        const child = subagentTree.find((entry) => entry.childSessionId === childSessionId);
+        setSidePanel({
+            title: child?.task ?? child?.memberName ?? vi.chat.subagentTitle,
+            childSessionId,
+        });
+    }, [subagentTree]);
+
+    useEffect(() => {
+        if (sidePanel === null) {
+            setChildDetail(null);
+            setChildFailed(false);
+            return undefined;
+        }
+        let cancelled = false;
+        setChildLoading(true);
+        setChildFailed(false);
+        api.sessions.get(sidePanel.childSessionId).then((detail) => {
+            if (cancelled) return;
+            setChildDetail(detail);
+            setChildLoading(false);
+        }).catch(() => {
+            if (cancelled) return;
+            setChildDetail(null);
+            setChildLoading(false);
+            setChildFailed(true);
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [sidePanel]);
 
     /**
      * Một lượt (stream hoặc regenerate) từ đầu tới cuối. `onEvent` chỉ dispatch frame; mọi state
@@ -1144,7 +1192,8 @@ export const ChatInterface: React.FC = () => {
                 onSearch={() => setShowSearch(true)}
                 onNewChat={() => { void handleNewSession(); }}
             >
-                <div className="flex h-full min-h-0 flex-col bg-bg-main">
+                <div className="flex h-full min-h-0 bg-bg-main">
+                    <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
                     <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
                     <Header
@@ -1157,7 +1206,7 @@ export const ChatInterface: React.FC = () => {
                         onShowHelp={() => openSettings('advanced')}
                         onNewChat={() => { void handleNewSession(); }}
                         subagents={subagentTree}
-                        onOpenChildSession={handleSelectSession}
+                        onOpenChildSession={handleOpenChildSession}
                         onInterruptChild={(childId) => {
                             const parentId = activeSessionIdRef.current ?? currentSessionId;
                             if (!parentId) return;
@@ -1230,7 +1279,7 @@ export const ChatInterface: React.FC = () => {
                                     void handleApproval(approvalId, decision, scope, feedback);
                                 }}
                                 onOpenSettings={() => openSettings('providers')}
-                                onOpenChildSession={handleSelectSession}
+                                onOpenChildSession={handleOpenChildSession}
                                 endRef={messagesEndRef}
                             />
                         )}
@@ -1312,6 +1361,19 @@ export const ChatInterface: React.FC = () => {
                             onClearQueued={() => { void handleClearQueued(); }}
                         />
                     </div>
+                    </div>
+                    {sidePanel !== null ? (
+                        <SidePanel
+                            title={sidePanel.title}
+                            onClose={() => setSidePanel(null)}
+                        >
+                            <ChildSessionPanel
+                                detail={childDetail}
+                                loading={childLoading}
+                                failed={childFailed}
+                            />
+                        </SidePanel>
+                    ) : null}
                 </div>
             </AppShell>
 

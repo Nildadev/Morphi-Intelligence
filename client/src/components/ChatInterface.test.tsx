@@ -697,6 +697,51 @@ describe('ChatInterface on the harness protocol', () => {
         await waitFor(() => expect(screen.queryByTestId('session-running-s10')).toBeNull());
     });
 
+    it('opens a subagent child session in the docked side panel without replacing the main transcript', async () => {
+        // The child row is a door into the child's own transcript. Opening it used to swap the main
+        // pane (losing the parent's scroll and the turn the child belongs to); it must now fill the
+        // side panel and leave the parent conversation untouched.
+        const childSessionId = 'sess_child';
+        const subagentMessage = {
+            id: 'sub_sub1', role: 'assistant', content: '',
+            steps: [{
+                type: 'subagent', subagentId: 'sub1', task: 'Tóm tắt hoá đơn',
+                childSessionId, status: 'done', summary: 'Xong', toolCount: 2,
+                failedToolCount: 0, durationMs: 31_000,
+            }],
+            createdAt: 3, superseded: false,
+        };
+        withRows(userMsg, subagentMessage);
+        handlers.set('GET /api/sessions', () => json([{ ...summary }]));
+        handlers.set(`GET /api/sessions/${childSessionId}`, () => json({
+            ...summary, id: childSessionId, title: 'Phiên con',
+            messages: [{
+                ...assistantMsg,
+                id: 'a_child',
+                content: 'Nội dung phiên con',
+                steps: [{ type: 'text', content: 'Nội dung phiên con' }],
+            }],
+            steps: [], skills: [],
+        }));
+        handlers.set(`GET /api/sessions/${SESSION_ID}/subagent/list`, () => json([]));
+        render(<ChatInterface />);
+        await screen.findByText('xin chào');
+
+        expect(screen.queryByTestId('side-panel')).toBeNull();
+        fireEvent.click(await screen.findByRole('button', { name: /SubAgent general-purpose/ }));
+
+        // The child transcript loads into the panel...
+        expect(await screen.findByTestId('side-panel')).toBeInTheDocument();
+        expect(await screen.findByText('Nội dung phiên con')).toBeInTheDocument();
+        // ...while the parent session is still the one on screen behind it.
+        expect(screen.getByText('xin chào')).toBeInTheDocument();
+        expect(countOf(`GET /api/sessions/${SESSION_ID}`)).toBe(1);
+
+        // Escape dismisses the panel (the overlay form is focus-trapped at narrow widths).
+        fireEvent.keyDown(document, { key: 'Escape' });
+        await waitFor(() => expect(screen.queryByTestId('side-panel')).toBeNull());
+    });
+
     it('regenerate posts the assistant message id and replaces that answer', async () => {
         handlers.set('GET /api/sessions', () => json([{ ...summary }]));
         handlers.set('POST /api/chat/regenerate', () => sse([

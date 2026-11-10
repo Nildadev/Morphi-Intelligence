@@ -1,10 +1,11 @@
-import type { Ref } from 'react';
+import { useMemo, type Ref } from 'react';
 import type { ChatDraft, ChatError, PendingApproval } from '../../lib/chatReducer';
 import type { DerivedMessage, DerivedStep, TurnTimelineEntry } from '../../types';
 import { vi } from '../../i18n/vi';
 import { ApprovalModal } from './ApprovalModal';
 import { ErrorCard } from './ErrorCard';
 import { MessageItem } from './MessageItem';
+import { PromptRail, type PromptRailItem } from './PromptRail';
 
 export interface ChatViewProps {
     messages: DerivedMessage[];
@@ -34,6 +35,14 @@ export interface ChatViewProps {
  */
 
 type CallStep = Extract<DerivedStep, { type: 'call' }>;
+
+/**
+ * Runtime deliveries (`source: 'notice'`, or the legacy machine prefix) are not prompts: they have
+ * no user row and must not get a prompt-rail tick. Mirrors `isRuntimeNotice` in MessageItem, which
+ * cannot be imported here without making this module depend on the row renderer.
+ */
+const isRuntimeNotice = (message: DerivedMessage): boolean =>
+    message.source === 'notice' || /^Background (?:subagent|job) \S+/.test(message.content);
 
 /**
  * Aggregate of one turn segment. The entries preserve the best available order: for each assistant
@@ -146,7 +155,7 @@ export function ChatView({
         const finalAssistant = assistantIndices[assistantIndices.length - 1]!;
         finalAssistantBySegment.set(segmentId, finalAssistant);
         // The worked block belongs to the row that also carries the conclusion text, so the
-        // finished turn reads in order: worked block (process) → answer → changed files
+        // finished turn reads in order: worked block (process) → answer → changed scripts
         // (outcome, rendered by MessageItem after its text steps). Pinning it to the FIRST row
         // with activity would leave the outcome summary above the answer.
         const hasActivity = assistantIndices.some((index) => {
@@ -196,8 +205,30 @@ export function ChatView({
         superseded: false,
     };
 
+    // Prompt rail: one tick per real user prompt (runtime notices excluded), with the first
+    // assistant text row that follows as its preview. Built from the same durable rows the
+    // transcript renders, so a tick can never point at a row that is not on screen. Memoised on
+    // `messages` so streaming draft frames do not rebuild the rail's scroll listeners per token.
+    const promptRailItems: PromptRailItem[] = useMemo(() => {
+        const items: PromptRailItem[] = [];
+        messages.forEach((message, index) => {
+            if (message.role !== 'user' || isRuntimeNotice(message)) return;
+            let reply = '';
+            for (let next = index + 1; next < messages.length && messages[next].role !== 'user'; next += 1) {
+                const candidate = messages[next];
+                if (candidate.role === 'assistant' && candidate.content.trim() !== '') {
+                    reply = candidate.content;
+                    break;
+                }
+            }
+            items.push({ id: message.id, prompt: message.content, reply });
+        });
+        return items;
+    }, [messages]);
+
     return (
-        <div className="mx-auto w-full max-w-[730px] px-4 py-4 sm:px-6">
+        <div className="relative mx-auto w-full max-w-[730px] px-4 py-4 sm:px-6">
+            <PromptRail items={promptRailItems} />
             {messages.map((message, index) => {
                 if (isDroppedIntermediate(index, message)) return null;
                 const worked = turnActivityByHostIndex.get(index);

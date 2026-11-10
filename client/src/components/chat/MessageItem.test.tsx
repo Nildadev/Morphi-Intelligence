@@ -311,10 +311,10 @@ describe('MessageItem', () => {
         expect(container.querySelector('td')).toHaveClass('border-border');
     });
 
-    it('renders the changed-files block AFTER the answer, outside the worked block', () => {
+    it('renders the changed-scripts block AFTER the answer, outside the worked block', () => {
         const editCall = {
             callId: 'c1', name: 'studio.edit_script', status: 'done' as const, durationMs: 1000,
-            args: { path: 'src/Config.lua', old: 'return {}\n', source: 'return {\n  speed = 16,\n}\n' },
+            args: { path: 'ServerScriptService/Combat', old: 'return {}\n', source: 'return {\n  speed = 16,\n}\n' },
         };
         const { container } = render(
             <MessageItem
@@ -331,7 +331,7 @@ describe('MessageItem', () => {
         const text = container.textContent ?? '';
         const workedAt = text.indexOf('Đã làm trong');
         const answerAt = text.indexOf('Đã xong');
-        const summaryAt = text.indexOf('1 tệp thay đổi');
+        const summaryAt = text.indexOf('1 script đã thay đổi');
         expect(workedAt).toBeGreaterThanOrEqual(0);
         expect(answerAt).toBeGreaterThanOrEqual(0);
         expect(summaryAt).toBeGreaterThanOrEqual(0);
@@ -341,14 +341,14 @@ describe('MessageItem', () => {
 
         // The summary trigger is a sibling of the answer, not a descendant of the worked block:
         // the worked block's expander and the summary are distinct buttons.
-        const summary = screen.getByRole('button', { name: /1 tệp thay đổi/ });
+        const summary = screen.getByRole('button', { name: /1 script đã thay đổi/ });
         const worked = screen.getByRole('button', { name: /Đã làm trong/ });
         expect(worked.contains(summary)).toBe(false);
         expect(summary).toHaveAttribute('aria-expanded', 'false');
     });
 
-    it('keeps the changed-files block collapsed by default and expands into the full diff', () => {
-        render(
+    it('keeps the changed-scripts block collapsed by default and expands into a path list, not diffs', () => {
+        const { container } = render(
             <MessageItem
                 message={assistantMessage({
                     content: 'Đã xong',
@@ -357,8 +357,8 @@ describe('MessageItem', () => {
                         {
                             type: 'call',
                             call: {
-                                callId: 'c1', name: 'studio.edit_script', status: 'done', durationMs: 1000,
-                                args: { path: 'src/Config.lua', old: 'return {}\n', source: 'return {\n  speed = 16,\n}\n' },
+                                callId: 'c1', name: 'studio.edit_script', status: 'done' as const, durationMs: 1000,
+                                args: { path: 'ServerScriptService/Combat', old: 'return {}\n', source: 'return {\n  speed = 16,\n}\n' },
                             },
                         },
                     ],
@@ -366,18 +366,23 @@ describe('MessageItem', () => {
             />,
         );
 
-        // Collapsed: no diff rows anywhere yet.
+        // Collapsed: no paths and no diff rows yet.
+        expect(screen.queryByText('ServerScriptService/Combat')).toBeNull();
         expect(screen.queryByText('speed = 16,')).toBeNull();
 
-        fireEvent.click(screen.getByRole('button', { name: /1 tệp thay đổi/ }));
-        expect(screen.getByText('speed = 16,')).toBeInTheDocument();
-        expect(screen.getByText('src/Config.lua')).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: /1 script đã thay đổi/ }));
+
+        // The list shows the changed script path...
+        expect(screen.getByText('ServerScriptService/Combat')).toBeInTheDocument();
+        // ...and never the hunks: the diff lives on the edit tool call.
+        expect(screen.queryByText('speed = 16,')).toBeNull();
+        expect(container.querySelector('[data-diff-kind]')).toBeNull();
     });
 
-    it('does not show the changed-files block on an intermediate row that hides activity', () => {
+    it('does not show the changed-scripts block on an intermediate row that hides activity', () => {
         const editCall = {
             callId: 'c1', name: 'studio.edit_script', status: 'done' as const, durationMs: 1000,
-            args: { path: 'src/Config.lua', old: '', source: 'x' },
+            args: { path: 'ServerScriptService/Combat', old: '', source: 'x' },
         };
         render(
             <MessageItem
@@ -389,13 +394,13 @@ describe('MessageItem', () => {
             />,
         );
 
-        expect(screen.queryByText(/tệp thay đổi/)).toBeNull();
+        expect(screen.queryByText(/script đã thay đổi/)).toBeNull();
     });
 
-    it('renders an edit tool call inside the worked block as a compact row without diff rows', () => {
+    it('renders an edit tool call inside the worked block as a collapsed row whose expander owns the diff', () => {
         const editCall = {
             callId: 'c1', name: 'studio.edit_script', status: 'done' as const, durationMs: 1000,
-            args: { path: 'src/Config.lua', old: 'return {}\n', source: 'return {\n  speed = 16,\n}\n' },
+            args: { path: 'ServerScriptService/Combat', old: 'return {}\n', source: 'return {\n  speed = 16,\n}\n' },
         };
         const { container } = render(
             <MessageItem
@@ -413,11 +418,15 @@ describe('MessageItem', () => {
         expect(container.querySelector('[data-diff-kind]')).toBeNull();
         fireEvent.click(screen.getByRole('button', { name: /Đã làm trong/ }));
 
-        // ...and expanding the process block reveals the compact call row, not hunks: the only
-        // diff on screen appears after expanding the outcome block.
-        expect(screen.getByText('src/Config.lua')).toBeInTheDocument();
+        // ...and expanding the process block reveals the edit row, still without hunks: the diff
+        // appears only when the edit call's own expander is clicked.
+        expect(screen.getByText('ServerScriptService/Combat')).toBeInTheDocument();
         expect(container.querySelector('[data-diff-kind]')).toBeNull();
         expect(screen.queryByText('speed = 16,')).toBeNull();
+
+        fireEvent.click(screen.getByRole('button', { name: /Dùng tool studio\.edit script/ }));
+        expect(screen.getByText('speed = 16,')).toBeInTheDocument();
+        expect(container.querySelectorAll('[data-diff-kind]').length).toBeGreaterThan(0);
     });
 
     it('renders a runtime delivery as a subtle notice row, never a user bubble', () => {

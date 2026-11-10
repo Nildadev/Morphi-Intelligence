@@ -6,23 +6,32 @@ import type { DerivedToolCall } from '../types';
  *
  * The data already exists: every edit-shaped Studio tool carries its before/after text in
  * `args`, and `ToolCallCard` has computed a per-call diff since Task 21. What was missing is
- * the *aggregate* the user actually reads: how many files this turn touched, and the total
+ * the *aggregate* the user actually reads: how many scripts this turn touched, and the total
  * line churn. Without it the collapsed "Đã làm trong 12s" line says how long the agent worked
  * but not what it did.
  *
+ * These are Studio **script instances**, not OS files: the path is a Roblox instance path such as
+ * `ServerScriptService/Combat`, not a path on the host filesystem. The summary and the edit tool
+ * card both speak "script" so the transcript never claims a disk file changed when what changed is
+ * a script inside the user's place.
+ *
  * Design constraints that come from the real payloads:
- *  - A turn can edit the same file more than once (`studio.edit_script` twice). Counting rows
+ *  - A turn can edit the same script more than once (`studio.edit_script` twice). Counting rows
  *    would over-report, so the summary keys by path and keeps the LAST diff for that path —
  *    the last write is what the workspace holds.
- *  - `studio.multi_edit` is one call that touches several files; its `args` is an array of
- *    per-file edits, so it expands into N entries.
+ *  - `studio.multi_edit` is one call that touches several scripts; its `args` is an array of
+ *    per-script edits, so it expands into N entries.
  *  - Anything that cannot be read as a path is skipped rather than guessed: a wrong count is
  *    worse than no count (same rule as the provider error messages).
  */
 
 export type DiffOp = { kind: 'eq' | 'add' | 'del'; oldNo: number; newNo: number; text: string };
 
-/** Tools whose `args` describe a file write. Kept in sync with `ToolCallCard`'s diff viewer. */
+/**
+ * Tools whose `args` describe a script write. Kept in sync with `ToolCallCard`'s diff viewer.
+ * Their paths are Studio script instance paths (e.g. `ServerScriptService/Combat`), not OS file
+ * paths — the same vocabulary the end-of-message script list uses.
+ */
 export const EDIT_TOOL_NAMES: ReadonlySet<string> = new Set([
   'studio.multi_edit',
   'studio.execute_luau',
@@ -46,7 +55,7 @@ function splitLines(text: string): string[] {
 }
 
 /**
- * Tiny line LCS for the diff viewer. Capped: a file over 2000 lines falls back to
+ * Tiny line LCS for the diff viewer. Capped: a script over 2000 lines falls back to
  * "all added / all removed", which is still truthful about churn and avoids an O(n·m)
  * allocation on a pathological input.
  */
@@ -88,7 +97,7 @@ export function diffLines(oldText: string, newText: string): { ops: DiffOp[]; ad
   return { ops, added, removed };
 }
 
-export interface FileChange {
+export interface ScriptChange {
   path: string;
   added: number;
   removed: number;
@@ -109,8 +118,8 @@ const OLD_KEYS = ['old', 'old_string', 'oldText', 'before'] as const;
 const NEW_KEYS = ['source', 'code', 'script_content', 'content', 'new_string', 'newText'] as const;
 const PATH_KEYS = ['path', 'filename', 'script', 'target', 'file'] as const;
 
-/** One file edit described by a flat args object, or null when the shape is not a file write. */
-function changeOfArgs(args: Record<string, unknown>): FileChange | null {
+/** One script edit described by a flat args object, or null when the shape is not a script write. */
+function changeOfArgs(args: Record<string, unknown>): ScriptChange | null {
   const pathValue = textOf(args, PATH_KEYS);
   if (pathValue.trim() === '') return null;
   const oldText = textOf(args, OLD_KEYS);
@@ -121,11 +130,12 @@ function changeOfArgs(args: Record<string, unknown>): FileChange | null {
 }
 
 /**
- * Every file change a single tool call describes, regardless of its status. Used by the compact
- * process card, which shows the target path while the call is still running (the args have already
- * streamed in). The aggregate summary goes through `changesOfCall`, which only counts settled calls.
+ * Every script change a single tool call describes, regardless of its status. Used by the edit
+ * tool card, which shows the target path and diff while the call is still running (the args have
+ * already streamed in). The aggregate summary goes through `changesOfCall`, which only counts
+ * settled calls.
  */
-export function changeTargetsOfCall(call: DerivedToolCall): FileChange[] {
+export function changeTargetsOfCall(call: DerivedToolCall): ScriptChange[] {
   if (!EDIT_TOOL_NAMES.has(call.name)) return [];
   const args = call.args;
   if (Array.isArray(args)) {
@@ -152,32 +162,33 @@ export function changeTargetsOfCall(call: DerivedToolCall): FileChange[] {
 }
 
 /**
- * Every file change a single settled tool call made, with its status attached. `studio.multi_edit`
+ * Every script change a single settled tool call made, with its status attached. `studio.multi_edit`
  * carries an array (either at `args.edits` or as the args value itself), so one call can yield
- * many files.
+ * many scripts.
  */
-export function changesOfCall(call: DerivedToolCall): FileChange[] {
+export function changesOfCall(call: DerivedToolCall): ScriptChange[] {
   if (call.status !== 'done' && call.status !== 'error') return [];
   return changeTargetsOfCall(call).map((change) => ({ ...change, status: call.status }));
 }
 
 export interface TurnChangeSummary {
-  files: number;
+  /** Number of distinct scripts this turn changed. */
+  scripts: number;
   additions: number;
   deletions: number;
-  /** Per-file totals, in first-seen order; the last write to a path wins. */
-  changes: FileChange[];
+  /** Per-script totals, in first-seen order; the last write to a path wins. */
+  changes: ScriptChange[];
 }
 
 /**
  * Aggregate the edits of one turn. Returns null when nothing was written, so callers render
- * no line at all instead of a "0 files changed" that reads like a failure.
+ * no line at all instead of a "0 scripts changed" that reads like a failure.
  */
 export function summarizeTurnChanges(calls: readonly DerivedToolCall[]): TurnChangeSummary | null {
-  const byPath = new Map<string, FileChange>();
+  const byPath = new Map<string, ScriptChange>();
   for (const call of calls) {
     for (const change of changesOfCall(call)) {
-      // Last write wins: a file edited twice in one turn is one changed file whose final
+      // Last write wins: a script edited twice in one turn is one changed script whose final
       // diff is the one the workspace actually holds.
       byPath.set(change.path, change);
     }
@@ -185,7 +196,7 @@ export function summarizeTurnChanges(calls: readonly DerivedToolCall[]): TurnCha
   if (byPath.size === 0) return null;
   const changes = [...byPath.values()];
   return {
-    files: changes.length,
+    scripts: changes.length,
     additions: changes.reduce((sum, change) => sum + change.added, 0),
     deletions: changes.reduce((sum, change) => sum + change.removed, 0),
     changes,

@@ -119,7 +119,7 @@ export function MessageItem({ message, toolProgress, isStreaming = false, onRege
 
     if (message.role === 'user') {
         return (
-            <div className="group flex w-full flex-col items-end py-1.5">
+            <div id={`msg-${message.id}`} className="group flex w-full flex-col items-end py-1.5">
                 <div className="max-w-[85%] break-words rounded-[18px] bg-bg-inset px-4 py-2.5 text-left text-text-primary">
                     <Markdown compact>{message.content}</Markdown>
                     {message.attachments && message.attachments.length > 0 ? (
@@ -281,8 +281,8 @@ export function MessageItem({ message, toolProgress, isStreaming = false, onRege
 
             {/* Outcome row, at the END of the article: the worked block above is the process
               * (thinking, tools, duration), the answer text in between is the conclusion, and
-              * this states what the turn actually changed. Only rendered when the turn wrote
-              * something — a read-only turn shows no "0 files changed" line. Intermediate rows
+              * this lists what the turn actually changed. Only rendered when the turn wrote
+              * something — a read-only turn shows no "0 scripts changed" line. Intermediate rows
               * have no activity calls (`hideActivity`), so they never render it. */}
             {turnChanges !== null ? (
                 <TurnWorkSummary summary={turnChanges} live={isStreaming || workedLive || !allSettled} />

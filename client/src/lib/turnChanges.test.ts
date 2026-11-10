@@ -78,7 +78,7 @@ describe('changesOfCall', () => {
 
     it('accepts every alias the payloads really use', () => {
         // The four path aliases and the before/after aliases are not interchangeable in theory but
-        // are all present in real Studio tool calls; a missed alias silently drops a changed file.
+        // are all present in real Studio tool calls; a missed alias silently drops a changed script.
         for (const args of [
             { filename: 'A.lua', old_string: 'x', new_string: 'x\ny' },
             { script: 'A.lua', oldText: 'x', newText: 'x\ny' },
@@ -89,7 +89,7 @@ describe('changesOfCall', () => {
         }
     });
 
-    it('expands a multi_edit array into one change per file', () => {
+    it('expands a multi_edit array into one change per script', () => {
         const changes = changesOfCall(call({
             name: 'studio.multi_edit',
             args: { edits: [editArgs('a.lua', '', 'one'), editArgs('b.lua', '', 'two\nlines')] },
@@ -107,7 +107,7 @@ describe('changesOfCall', () => {
     });
 
     it('prefers the explicit edit list over a flat path on the same call', () => {
-        // A multi_edit that also carries `path` must not double-count the parent path as a file.
+        // A multi_edit that also carries `path` must not double-count the parent path as a script.
         const changes = changesOfCall(call({
             name: 'studio.multi_edit',
             args: { path: 'ignored.lua', edits: [editArgs('a.lua', '', 'one')] },
@@ -122,9 +122,9 @@ describe('changesOfCall', () => {
         expect(changesOfCall(call({ args: null }))).toEqual([]);
     });
 
-    it('keeps a touched-but-empty edit as a zero-churn file rather than dropping it', () => {
-        // A write with no before/after text still means "this file was touched"; hiding it would
-        // make the file count disagree with what the user saw in the tool card.
+    it('keeps a touched-but-empty edit as a zero-churn script rather than dropping it', () => {
+        // A write with no before/after text still means "this script was touched"; hiding it would
+        // make the script count disagree with what the user saw in the tool card.
         const changes = changesOfCall(call({ args: { path: 'empty.lua' } }));
         expect(changes).toHaveLength(1);
         expect(changes[0]).toMatchObject({ path: 'empty.lua', added: 0, removed: 0 });
@@ -132,34 +132,34 @@ describe('changesOfCall', () => {
 });
 
 describe('summarizeTurnChanges', () => {
-    it('returns null when nothing was written, so no "0 files" line is rendered', () => {
+    it('returns null when nothing was written, so no "0 scripts" line is rendered', () => {
         expect(summarizeTurnChanges([])).toBeNull();
         expect(summarizeTurnChanges([call({ name: 'studio.read_script', args: { path: 'a.lua' } })])).toBeNull();
     });
 
-    it('counts a file edited twice in one turn ONCE, keeping the last write', () => {
-        // Two writes to the same file are one changed file. The final workspace content is the
+    it('counts a script edited twice in one turn ONCE, keeping the last write', () => {
+        // Two writes to the same script are one changed script. The final workspace content is the
         // second write, so its diff is the one reported — summing both would overstate churn.
         const summary = summarizeTurnChanges([
             call({ args: editArgs('a.lua', '', 'first') }),
             call({ args: editArgs('a.lua', 'first', 'first\nsecond') }),
         ]);
         expect(summary).not.toBeNull();
-        expect(summary?.files).toBe(1);
+        expect(summary?.scripts).toBe(1);
         expect(summary?.additions).toBe(1);
         expect(summary?.deletions).toBe(0);
     });
 
-    it('sums additions and deletions across distinct files', () => {
+    it('sums additions and deletions across distinct scripts', () => {
         const summary = summarizeTurnChanges([
             call({ args: editArgs('a.lua', '', 'one\ntwo') }),
             call({ name: 'studio.create_script', args: { path: 'b.lua', source: 'x' } }),
             call({ name: 'studio.write_script', args: { path: 'c.lua', old: 'gone', source: '' } }),
         ]);
-        expect(summary).toMatchObject({ files: 3, additions: 3, deletions: 1 });
+        expect(summary).toMatchObject({ scripts: 3, additions: 3, deletions: 1 });
     });
 
-    it('keeps first-seen order for the per-file list', () => {
+    it('keeps first-seen order for the per-script list', () => {
         const summary = summarizeTurnChanges([
             call({ args: editArgs('z.lua', '', 'x') }),
             call({ args: editArgs('a.lua', '', 'y') }),
@@ -167,11 +167,11 @@ describe('summarizeTurnChanges', () => {
         expect(summary?.changes.map((change) => change.path)).toEqual(['z.lua', 'a.lua']);
     });
 
-    it('a multi_edit counts every file it touched', () => {
+    it('a multi_edit counts every script it touched', () => {
         const summary = summarizeTurnChanges([call({
             name: 'studio.multi_edit',
             args: { edits: [editArgs('a.lua', '', 'one'), editArgs('b.lua', '', 'two')] },
         })]);
-        expect(summary).toMatchObject({ files: 2, additions: 2, deletions: 0 });
+        expect(summary).toMatchObject({ scripts: 2, additions: 2, deletions: 0 });
     });
 });

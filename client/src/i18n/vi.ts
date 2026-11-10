@@ -229,15 +229,16 @@ export const vi = {
     // Task 23 — transcript surfaces. Technical nouns (tool, token, provider) stay as-is.
     chat: {
         thinking: 'Đã suy nghĩ',
-        thinkingFor: 'Đã suy nghĩ trong',
+        thinkingSeconds: '{seconds} giây',
         workedFor: 'Đã làm trong',
         working: 'Đang làm việc…',
-        // Tổng kết thay đổi của một lượt (kiểu ZCode "N files changed +A −D"). Tiếng Việt không
-        // biến đổi hình thái theo số nên một mẫu dùng cho mọi N; `filesChangedOne` chỉ để câu
-        // đọc tự nhiên ở N=1.
-        filesChangedOne: '1 tệp thay đổi',
-        filesChangedMany: '{count} tệp thay đổi',
-        filesChangedLabel: 'Các tệp đã thay đổi trong lượt này',
+        // Tổng kết thay đổi của một lượt (kiểu ZCode "N files changed +A −D"). Đây là SCRIPT
+        // trong Studio (đường dẫn instance như `ServerScriptService/Combat`), không phải tệp trên
+        // đĩa. Tiếng Việt không biến đổi hình thái theo số nên một mẫu dùng cho mọi N;
+        // `scriptsChangedOne` chỉ để câu đọc tự nhiên ở N=1.
+        scriptsChangedOne: '1 script đã thay đổi',
+        scriptsChangedMany: '{count} script đã thay đổi',
+        scriptsChangedLabel: 'Các script đã thay đổi trong lượt này',
         diffEmpty: 'Không có nội dung để diff.',
         linesAdded: 'dòng thêm',
         linesRemoved: 'dòng bớt',
@@ -266,12 +267,12 @@ export const vi = {
         jobFailed: 'Tác vụ nền thất bại',
         subagentStarted: 'Đã khởi chạy subagent',
         subagentTitle: 'Subagent',
-        subagentAfter: 'sau {time}',
-        subagentTimeShort: '{s} giây',
-        subagentTimeLong: '{m} phút {s} giây',
-        subagentTools: 'Đã chạy {count} tool',
-        subagentToolsFailed: '{failed} trong đó lỗi',
-        openChildSession: 'Mở phiên con',
+        sidePanelClose: 'Đóng bảng phiên con',
+        sidePanelLoading: 'Đang tải phiên con…',
+        sidePanelLoadError: 'Không tải được phiên con.',
+        sidePanelEmpty: 'Phiên con chưa có nội dung.',
+        promptRailLabel: 'Danh sách câu hỏi trong cuộc trò chuyện',
+        promptRailJumpTo: 'Tới câu hỏi {index}',
         args: 'Tham số',
         result: 'Kết quả',
         truncated: 'Kết quả đã bị cắt bớt ở 50.000 ký tự.',

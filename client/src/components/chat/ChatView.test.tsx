@@ -206,9 +206,9 @@ describe('ChatView', () => {
         expect(screen.getAllByRole('button', { name: /Đã làm trong/ })).toHaveLength(1);
     });
 
-    it('puts the changed-files outcome after the conclusion, not inside the worked block', () => {
+    it('puts the changed-scripts outcome after the conclusion, not inside the worked block', () => {
         // Production wiring test: the host row must be the row that carries the conclusion, so
-        // the finished turn reads worked block → answer → changed files.
+        // the finished turn reads worked block → answer → changed scripts.
         const user: DerivedMessage = { id: 'u1', role: 'user', content: 'Sửa giúp', steps: [], createdAt: 1, superseded: false };
         const toolRow: DerivedMessage = {
             id: 'a1', role: 'assistant', content: '',
@@ -216,7 +216,7 @@ describe('ChatView', () => {
                 type: 'call',
                 call: {
                     callId: 'c1', name: 'studio.edit_script', status: 'done', durationMs: 1000,
-                    args: { path: 'src/Config.lua', old: 'return {}\n', source: 'return {\n  speed = 16,\n}\n' },
+                    args: { path: 'ServerScriptService/Combat', old: 'return {}\n', source: 'return {\n  speed = 16,\n}\n' },
                 },
             }],
             createdAt: 2, superseded: false,
@@ -232,7 +232,7 @@ describe('ChatView', () => {
         const text = container.textContent ?? '';
         const workedAt = text.indexOf('Đã làm trong');
         const answerAt = text.indexOf('Đã sửa xong');
-        const summaryAt = text.indexOf('1 tệp thay đổi');
+        const summaryAt = text.indexOf('1 script đã thay đổi');
         expect(workedAt).toBeGreaterThanOrEqual(0);
         expect(answerAt).toBeGreaterThanOrEqual(0);
         expect(summaryAt).toBeGreaterThanOrEqual(0);
@@ -240,7 +240,7 @@ describe('ChatView', () => {
         expect(answerAt).toBeLessThan(summaryAt);
 
         // Exactly one summary row for the turn, and it is not a descendant of the worked button.
-        const summaries = screen.getAllByRole('button', { name: /1 tệp thay đổi/ });
+        const summaries = screen.getAllByRole('button', { name: /1 script đã thay đổi/ });
         expect(summaries).toHaveLength(1);
         const worked = screen.getByRole('button', { name: /Đã làm trong/ });
         expect(worked.contains(summaries[0]!)).toBe(false);

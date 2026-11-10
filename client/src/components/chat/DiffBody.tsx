@@ -1,17 +1,17 @@
 import { vi } from '../../i18n/vi';
 import { cn } from '../../utils';
-import type { FileChange } from '../../lib/turnChanges';
+import type { ScriptChange } from '../../lib/turnChanges';
 
 /**
- * The one and only diff renderer. It is used by the end-of-message changed-files block; tool
- * cards never render hunks, so a single change is never painted twice.
+ * The one and only diff renderer. It is used by the edit tool card — the call that produced the
+ * change — so the end-of-message script list can stay a plain table of contents.
  *
  * One gutter, not two: a `del` row prints its old line number and an `add`/`eq` row prints its
  * new one. Two gutters made every unchanged row show two different numbers side by side, which
  * reads as duplicated data; the reference transcript prints one number per row in reading order.
  * The gutter is `select-none` so copying a hunk does not drag line numbers into the clipboard.
  */
-export function DiffBody({ diff }: { diff: FileChange }) {
+export function DiffBody({ diff }: { diff: ScriptChange }) {
     return (
         <div className="max-h-80 overflow-auto font-mono text-[12px] leading-5">
             {diff.ops.length === 0 ? (

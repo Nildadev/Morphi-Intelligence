@@ -45,13 +45,17 @@ describe('ToolCallCard', () => {
         expect(screen.getByText('Đọc tệp')).toBeInTheDocument();
     });
 
-    it('expands args and result from an inset surface', () => {
+    it('shows the primary argument on the row and expands the JSON body on demand', () => {
         render(<ToolCallCard call={call()} />);
 
-        expect(screen.queryByText(/src\/a\.ts/)).toBeNull();
+        // The row itself carries the argument summary (that is what tells two calls apart)...
+        expect(screen.getByText('src/a.ts')).toHaveClass('font-mono');
+        // ...while the structured body stays collapsed.
+        expect(screen.queryByText('Tham số')).toBeNull();
         fireEvent.click(screen.getByRole('button'));
 
-        expect(screen.getByText(/src\/a\.ts/)).toBeInTheDocument();
+        expect(screen.getByText('Tham số')).toBeInTheDocument();
+        expect(screen.getByText('Kết quả')).toBeInTheDocument();
         expect(screen.getByText('nội dung')).toBeInTheDocument();
     });
 
@@ -94,11 +98,11 @@ describe('ToolCallCard', () => {
         expect(screen.getByText('Đã cho phép')).toBeInTheDocument();
     });
 
-    describe('edit calls render as a compact process row, never as a second diff', () => {
+    describe('edit calls own their diff, collapsed by default', () => {
         const editCall = (over: Partial<DerivedToolCall> = {}) => call({
             name: 'studio.edit_script',
             args: {
-                path: 'src/ReplicatedStorage/Config.lua',
+                path: 'ReplicatedStorage/Config',
                 old: 'return {}\n',
                 source: 'return {\n  speed = 16,\n  jump = 50,\n}\n',
             },
@@ -110,26 +114,63 @@ describe('ToolCallCard', () => {
             render(<ToolCallCard call={editCall()} />);
 
             expect(screen.getByText('Dùng tool studio.edit script')).toBeInTheDocument();
-            expect(screen.getByText('src/ReplicatedStorage/Config.lua')).toBeInTheDocument();
+            expect(screen.getByText('ReplicatedStorage/Config')).toBeInTheDocument();
             expect(screen.getByText('+4')).toBeInTheDocument();
             expect(screen.getByText('−1')).toBeInTheDocument();
             expect(screen.getByText('Hoàn tất')).toBeInTheDocument();
         });
 
-        it('does NOT render diff rows — the full diff lives only in the end-of-message block', () => {
-            // A diff has exactly one home. If this card painted hunks too, expanding the turn
-            // summary would show the same change twice.
+        it('starts collapsed with no diff rows, then expands into the hunks', () => {
             const { container } = render(<ToolCallCard call={editCall()} />);
 
-            expect(screen.queryByText('speed = 16,')).toBeNull();
-            expect(screen.queryByText('jump = 50,')).toBeNull();
+            const trigger = screen.getByRole('button');
+            expect(trigger).toHaveAttribute('aria-expanded', 'false');
             expect(container.querySelector('[data-diff-kind]')).toBeNull();
-            // Compact means no expander: there is no args/source dump behind a chevron either.
-            expect(screen.queryByRole('button')).toBeNull();
+            expect(screen.queryByText('speed = 16,')).toBeNull();
+
+            fireEvent.click(trigger);
+
+            expect(trigger).toHaveAttribute('aria-expanded', 'true');
+            expect(container.querySelectorAll('[data-diff-kind]').length).toBeGreaterThan(0);
+            expect(screen.getByText('speed = 16,')).toBeInTheDocument();
+            expect(screen.getByText('jump = 50,')).toBeInTheDocument();
+            // The removed original is present too, not just the new source.
+            expect(screen.getByText('return {}')).toBeInTheDocument();
         });
 
-        it('does NOT dump the tool arguments', () => {
+        it('renders one diff section per script for a multi_edit', () => {
+            const { container } = render(
+                <ToolCallCard
+                    call={call({
+                        name: 'studio.multi_edit',
+                        args: {
+                            edits: [
+                                { path: 'ServerScriptService/Combat', old: '', source: 'local a = 1' },
+                                { path: 'ReplicatedStorage/Config', old: 'x', source: 'x\ny' },
+                            ],
+                        },
+                        result: { ok: true },
+                    })}
+                />,
+            );
+
+            fireEvent.click(screen.getByRole('button'));
+
+            // Two path headers, one per script...
+            const headers = [...container.querySelectorAll('[title]')]
+                .filter((node) => node.getAttribute('title') === 'ServerScriptService/Combat'
+                    || node.getAttribute('title') === 'ReplicatedStorage/Config');
+            expect(headers).toHaveLength(2);
+            // ...and each has its own DiffBody (hunk rows grouped in one scroll container each).
+            expect(container.querySelectorAll('[data-diff-kind]').length).toBeGreaterThanOrEqual(3);
+            expect(screen.getByText('local a = 1')).toBeInTheDocument();
+            expect(screen.getByText('x')).toBeInTheDocument();
+            expect(screen.getByText('y')).toBeInTheDocument();
+        });
+
+        it('does NOT dump the tool arguments as JSON', () => {
             render(<ToolCallCard call={editCall()} />);
+            fireEvent.click(screen.getByRole('button'));
 
             expect(screen.queryByText('Tham số')).toBeNull();
             expect(screen.queryByText('Kết quả')).toBeNull();
@@ -140,7 +181,7 @@ describe('ToolCallCard', () => {
             // The args stream before the result, so the process row is useful during the turn.
             render(<ToolCallCard call={editCall({ status: 'running', result: undefined })} />);
 
-            expect(screen.getByText('src/ReplicatedStorage/Config.lua')).toBeInTheDocument();
+            expect(screen.getByText('ReplicatedStorage/Config')).toBeInTheDocument();
             expect(screen.getByText('Đang chạy')).toBeInTheDocument();
         });
 
@@ -150,6 +191,56 @@ describe('ToolCallCard', () => {
             fireEvent.click(screen.getByRole('button'));
             expect(screen.getByText('Tham số')).toBeInTheDocument();
             expect(screen.getByText('Kết quả')).toBeInTheDocument();
+        });
+    });
+
+    describe('transcript chrome: borderless rows, quote-block expansion', () => {
+        it('draws no card border or filled surface around a non-edit tool row', () => {
+            const { container } = render(<ToolCallCard call={call()} />);
+            const row = screen.getByRole('button');
+
+            // The row itself is on the page background: no border/rounded/card classes.
+            expect(row.className).not.toMatch(/rounded|border|bg-bg-card/);
+            const outer = container.firstElementChild as HTMLElement;
+            expect(outer.className).not.toMatch(/rounded|border|bg-bg-card/);
+            // Dense row (~28px) with a bold label and the detail in monospace.
+            expect(row).toHaveClass('h-7');
+            expect(screen.getByText('Đọc tệp')).toHaveClass('font-semibold');
+            expect(screen.getByText('read_file')).toHaveClass('font-mono');
+            expect(row).toHaveAttribute('aria-expanded', 'false');
+        });
+
+        it('expands args/result inside a left-bordered quote block with no fill', () => {
+            render(<ToolCallCard call={call()} />);
+            fireEvent.click(screen.getByRole('button'));
+
+            const body = screen.getByText('Tham số').parentElement?.parentElement as HTMLElement;
+            expect(body).toHaveClass('border-l');
+            expect(body).toHaveClass('border-border');
+            expect(body).toHaveClass('pl-3');
+            expect(body.className).not.toMatch(/rounded|bg-bg-card|bg-bg-inset/);
+            // The raw JSON keeps no filled surface of its own either.
+            const pre = screen.getByText(/"path": "src\/a\.ts"/);
+            expect(pre.className).not.toMatch(/rounded|bg-bg-inset/);
+        });
+
+        it('keeps a subtle card on the approval variant, the one permission-gate exception', () => {
+            const { container } = render(
+                <ToolCallCard
+                    approval={{
+                        approvalId: 'ap1',
+                        callId: 'c1',
+                        name: 'run_command',
+                        args: { cmd: 'ls' },
+                        risk: 'high',
+                    }}
+                />,
+            );
+
+            const card = container.firstElementChild as HTMLElement;
+            expect(card).toHaveClass('rounded-lg');
+            expect(card).toHaveClass('border');
+            expect(card).toHaveClass('bg-bg-card');
         });
     });
 });

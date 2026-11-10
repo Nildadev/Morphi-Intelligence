@@ -10,51 +10,58 @@ const run: Extract<DerivedMessage['steps'][number], { type: 'subagent' }> = {
     subagentId: 'sub_1',
     task: 'Tóm tắt hoá đơn tháng này',
     childSessionId: 'sess_child',
-    status: 'done',
-    summary: 'Đã tóm tắt được 42 hoá đơn thành bảng.',
-    toolCount: 26,
-    failedToolCount: 1,
-    durationMs: 31_000,
+    status: 'running',
+    summary: null,
+    toolCount: 0,
+    failedToolCount: 0,
+    durationMs: 0,
 };
 
+const messageWith = (step: typeof run): DerivedMessage => ({
+    id: 'm1',
+    role: 'assistant',
+    content: '',
+    steps: [step],
+    createdAt: 2,
+    superseded: false,
+});
+
 describe('SubagentCard', () => {
-    it('renders the collapsed card, expands for the summary, and opens the child session', () => {
+    it('renders one borderless row: SubAgent, the agent name in blue, the task and a chevron', () => {
         const onOpenChildSession = vi.fn();
-        const message: DerivedMessage = {
-            id: 'm1',
-            role: 'assistant',
-            content: '',
-            steps: [run],
-            createdAt: 2,
-            superseded: false,
-        };
-        render(<MessageItem message={message} onOpenChildSession={onOpenChildSession} />);
+        render(<MessageItem message={messageWith(run)} onOpenChildSession={onOpenChildSession} />);
 
-        expect(screen.getByText('Subagent')).toBeInTheDocument();
-        expect(screen.getByText(/Subagent xong · sau 31 giây/)).toBeInTheDocument();
-        expect(screen.queryByText('Đã tóm tắt được 42 hoá đơn thành bảng.')).toBeNull();
+        const row = screen.getByRole('button', { name: /SubAgent general-purpose/ });
+        expect(row).toHaveTextContent('SubAgent');
+        expect(row).toHaveTextContent('general-purpose');
+        expect(row).toHaveTextContent('Tóm tắt hoá đơn tháng này');
+        // No card chrome: no border, no rounded card, no filled surface on the row itself.
+        expect(row.className).not.toMatch(/rounded|border|bg-bg-card/);
 
-        fireEvent.click(screen.getByRole('button', { name: /Subagent xong/ }));
-        expect(screen.getByText('Tóm tắt hoá đơn tháng này')).toBeInTheDocument();
-        expect(screen.getByText('Đã tóm tắt được 42 hoá đơn thành bảng.')).toBeInTheDocument();
-        expect(screen.getByText('Đã chạy 26 tool · 1 trong đó lỗi')).toBeInTheDocument();
-
-        fireEvent.click(screen.getByRole('button', { name: 'Mở phiên con' }));
-        expect(onOpenChildSession).toHaveBeenCalledWith('sess_child');
+        const agentName = screen.getByText('general-purpose');
+        expect(agentName).toHaveClass('text-brand-text');
     });
 
-    it('keeps an errored run from claiming a clean outcome', () => {
-        const message: DerivedMessage = {
-            id: 'm2',
-            role: 'assistant',
-            content: '',
-            steps: [{ ...run, status: 'error', summary: 'Lỗi mạng', durationMs: 21_000 }],
-            createdAt: 3,
-            superseded: false,
-        };
-        render(<MessageItem message={message} />);
+    it('opens the child session on click without expanding anything inline', () => {
+        const onOpenChildSession = vi.fn();
+        render(<MessageItem message={messageWith(run)} onOpenChildSession={onOpenChildSession} />);
 
-        expect(screen.getByText(/Subagent thất bại · sau 21 giây/)).toBeInTheDocument();
-        expect(screen.queryByText(/Subagent xong/)).toBeNull();
+        fireEvent.click(screen.getByRole('button', { name: /SubAgent general-purpose/ }));
+        expect(onOpenChildSession).toHaveBeenCalledWith('sess_child');
+        // The row is a door, not an expander: no inline summary and no aria-expanded.
+        expect(screen.queryByText('Đã tóm tắt được 42 hoá đơn thành bảng.')).toBeNull();
+        expect(screen.getByRole('button', { name: /SubAgent general-purpose/ })).not.toHaveAttribute('aria-expanded');
+    });
+
+    it('marks a running child with a spinner and a finished one with its outcome', () => {
+        const { rerender } = render(<MessageItem message={messageWith(run)} />);
+        const runningRow = screen.getByRole('button', { name: /SubAgent general-purpose/ });
+        expect(runningRow.querySelector('.animate-spin')).not.toBeNull();
+
+        rerender(<MessageItem message={messageWith({ ...run, status: 'done' })} />);
+        expect(screen.queryByRole('button', { name: /SubAgent general-purpose/ })?.querySelector('.animate-spin')).toBeNull();
+
+        rerender(<MessageItem message={messageWith({ ...run, status: 'error' })} />);
+        expect(screen.getByText('Subagent thất bại')).toBeInTheDocument();
     });
 });
