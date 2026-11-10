@@ -140,6 +140,33 @@ Full rule text and the class scanner: `client/src/components/layout/tokens.test.
 
 ---
 
+## Transcript layout
+
+A finished assistant turn reads top-to-bottom as **process → answer → outcome**:
+
+1. **Worked block (process)** — the collapsed `Đã làm trong 12s` row that expands into thinking,
+   the interleaved spoken narrative, and one compact tool card per call. It is pinned to the
+   row that also carries the turn's conclusion text, so it always sits above the answer.
+2. **Answer text** — the final assistant text, rendered from `message.steps`.
+3. **Changed-files block (outcome)** — the collapsed `N tệp thay đổi +A −D` row rendered after
+   the answer, before the copy/regenerate footer. Expanding it shows one diff card per file
+   (path, churn, status, then hunk rows).
+
+Rules:
+
+- A diff is rendered in **exactly one place**: the expanded changed-files block. Edit tool calls
+  inside the worked block are compact process rows (icon, tool label, path, churn, status) with
+  no hunks and no args/source dump, so the same change is never painted twice.
+- The changed-files block is collapsed by default, inert while the turn is live, and absent on
+  intermediate rows (`hideActivity`) and on turns that wrote nothing.
+- Diff rows use **one gutter**: a `del` row prints its old line number, an `add`/`eq` row prints
+  its new one. Two gutters made unchanged rows show two different numbers side by side, which
+  reads as duplicated data.
+- `diffLines` drops exactly the one empty element a terminating newline produces before diffing;
+  a genuine interior or trailing blank line is still a line. The renderer never filters rows.
+
+---
+
 ## Working with the design system
 
 When asked to build or restyle UI:

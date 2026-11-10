@@ -311,6 +311,115 @@ describe('MessageItem', () => {
         expect(container.querySelector('td')).toHaveClass('border-border');
     });
 
+    it('renders the changed-files block AFTER the answer, outside the worked block', () => {
+        const editCall = {
+            callId: 'c1', name: 'studio.edit_script', status: 'done' as const, durationMs: 1000,
+            args: { path: 'src/Config.lua', old: 'return {}\n', source: 'return {\n  speed = 16,\n}\n' },
+        };
+        const { container } = render(
+            <MessageItem
+                message={assistantMessage({
+                    content: 'Đã xong',
+                    steps: [
+                        { type: 'text', content: 'Đã xong' },
+                        { type: 'call', call: editCall },
+                    ],
+                })}
+            />,
+        );
+
+        const text = container.textContent ?? '';
+        const workedAt = text.indexOf('Đã làm trong');
+        const answerAt = text.indexOf('Đã xong');
+        const summaryAt = text.indexOf('1 tệp thay đổi');
+        expect(workedAt).toBeGreaterThanOrEqual(0);
+        expect(answerAt).toBeGreaterThanOrEqual(0);
+        expect(summaryAt).toBeGreaterThanOrEqual(0);
+        // Process → answer → outcome.
+        expect(workedAt).toBeLessThan(answerAt);
+        expect(answerAt).toBeLessThan(summaryAt);
+
+        // The summary trigger is a sibling of the answer, not a descendant of the worked block:
+        // the worked block's expander and the summary are distinct buttons.
+        const summary = screen.getByRole('button', { name: /1 tệp thay đổi/ });
+        const worked = screen.getByRole('button', { name: /Đã làm trong/ });
+        expect(worked.contains(summary)).toBe(false);
+        expect(summary).toHaveAttribute('aria-expanded', 'false');
+    });
+
+    it('keeps the changed-files block collapsed by default and expands into the full diff', () => {
+        render(
+            <MessageItem
+                message={assistantMessage({
+                    content: 'Đã xong',
+                    steps: [
+                        { type: 'text', content: 'Đã xong' },
+                        {
+                            type: 'call',
+                            call: {
+                                callId: 'c1', name: 'studio.edit_script', status: 'done', durationMs: 1000,
+                                args: { path: 'src/Config.lua', old: 'return {}\n', source: 'return {\n  speed = 16,\n}\n' },
+                            },
+                        },
+                    ],
+                })}
+            />,
+        );
+
+        // Collapsed: no diff rows anywhere yet.
+        expect(screen.queryByText('speed = 16,')).toBeNull();
+
+        fireEvent.click(screen.getByRole('button', { name: /1 tệp thay đổi/ }));
+        expect(screen.getByText('speed = 16,')).toBeInTheDocument();
+        expect(screen.getByText('src/Config.lua')).toBeInTheDocument();
+    });
+
+    it('does not show the changed-files block on an intermediate row that hides activity', () => {
+        const editCall = {
+            callId: 'c1', name: 'studio.edit_script', status: 'done' as const, durationMs: 1000,
+            args: { path: 'src/Config.lua', old: '', source: 'x' },
+        };
+        render(
+            <MessageItem
+                message={assistantMessage({
+                    content: '',
+                    steps: [{ type: 'call', call: editCall }],
+                })}
+                hideActivity
+            />,
+        );
+
+        expect(screen.queryByText(/tệp thay đổi/)).toBeNull();
+    });
+
+    it('renders an edit tool call inside the worked block as a compact row without diff rows', () => {
+        const editCall = {
+            callId: 'c1', name: 'studio.edit_script', status: 'done' as const, durationMs: 1000,
+            args: { path: 'src/Config.lua', old: 'return {}\n', source: 'return {\n  speed = 16,\n}\n' },
+        };
+        const { container } = render(
+            <MessageItem
+                message={assistantMessage({
+                    content: 'Đã xong',
+                    steps: [
+                        { type: 'text', content: 'Đã xong' },
+                        { type: 'call', call: editCall },
+                    ],
+                })}
+            />,
+        );
+
+        // The diff is not painted while the worked block is collapsed...
+        expect(container.querySelector('[data-diff-kind]')).toBeNull();
+        fireEvent.click(screen.getByRole('button', { name: /Đã làm trong/ }));
+
+        // ...and expanding the process block reveals the compact call row, not hunks: the only
+        // diff on screen appears after expanding the outcome block.
+        expect(screen.getByText('src/Config.lua')).toBeInTheDocument();
+        expect(container.querySelector('[data-diff-kind]')).toBeNull();
+        expect(screen.queryByText('speed = 16,')).toBeNull();
+    });
+
     it('renders a runtime delivery as a subtle notice row, never a user bubble', () => {
         render(
             <MessageItem

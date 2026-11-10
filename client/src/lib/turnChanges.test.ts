@@ -40,6 +40,33 @@ describe('diffLines', () => {
         const { added, removed } = diffLines('same\ntext', 'same\ntext');
         expect({ added, removed }).toEqual({ added: 0, removed: 0 });
     });
+
+    it('drops the trailing newline on both sides instead of emitting a ghost empty row', () => {
+        // Real payloads end with '\n'. Splitting naively leaves '' in BOTH arrays, the LCS
+        // matches the two terminators and the renderer prints a row with only two line numbers.
+        const { ops, added, removed } = diffLines('return {}\n', 'return {\n  speed = 16,\n  jump = 50,\n}\n');
+        expect(ops.some((op) => op.kind === 'eq' && op.text === '')).toBe(false);
+        expect(ops.filter((op) => op.kind === 'eq')).toHaveLength(0);
+        expect({ added, removed }).toEqual({ added: 4, removed: 1 });
+    });
+
+    it('keeps a genuine interior blank line, which is real content', () => {
+        const { ops } = diffLines('a\n\nb\n', 'a\n\nc\n');
+        const blank = ops.filter((op) => op.kind === 'eq' && op.text === '');
+        expect(blank).toHaveLength(1);
+    });
+
+    it('keeps a genuine trailing blank line: only ONE terminating empty element is dropped', () => {
+        // 'a\n\n' is the line "a" followed by an empty line; dropping the terminator must leave
+        // that empty line in place, otherwise the diff silently loses a real line.
+        const { ops, added, removed } = diffLines('a\n\n', 'a\nb\n');
+        expect({ added, removed }).toEqual({ added: 1, removed: 1 });
+        expect(ops.filter((op) => op.kind === 'del').map((op) => op.text)).toEqual(['']);
+    });
+
+    it('still reports a pure insertion when only the new text is newline-terminated', () => {
+        expect(diffLines('a\nb', 'a\nb\nc\n')).toMatchObject({ added: 1, removed: 0 });
+    });
 });
 
 describe('changesOfCall', () => {

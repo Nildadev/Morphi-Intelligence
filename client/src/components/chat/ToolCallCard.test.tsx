@@ -94,7 +94,7 @@ describe('ToolCallCard', () => {
         expect(screen.getByText('Đã cho phép')).toBeInTheDocument();
     });
 
-    describe('edit calls render as the file change, not as a parameter dump', () => {
+    describe('edit calls render as a compact process row, never as a second diff', () => {
         const editCall = (over: Partial<DerivedToolCall> = {}) => call({
             name: 'studio.edit_script',
             args: {
@@ -106,29 +106,42 @@ describe('ToolCallCard', () => {
             ...over,
         });
 
-        it('shows the path and the churn in the header, always visible (no click needed)', () => {
+        it('shows the tool label, path and churn in one row (no click needed)', () => {
             render(<ToolCallCard call={editCall()} />);
 
+            expect(screen.getByText('Dùng tool studio.edit script')).toBeInTheDocument();
             expect(screen.getByText('src/ReplicatedStorage/Config.lua')).toBeInTheDocument();
             expect(screen.getByText('+4')).toBeInTheDocument();
             expect(screen.getByText('−1')).toBeInTheDocument();
+            expect(screen.getByText('Hoàn tất')).toBeInTheDocument();
         });
 
-        it('shows the diff rows themselves — the added lines are readable without expanding', () => {
-            render(<ToolCallCard call={editCall()} />);
+        it('does NOT render diff rows — the full diff lives only in the end-of-message block', () => {
+            // A diff has exactly one home. If this card painted hunks too, expanding the turn
+            // summary would show the same change twice.
+            const { container } = render(<ToolCallCard call={editCall()} />);
 
-            expect(screen.getByText('speed = 16,')).toBeInTheDocument();
-            expect(screen.getByText('jump = 50,')).toBeInTheDocument();
+            expect(screen.queryByText('speed = 16,')).toBeNull();
+            expect(screen.queryByText('jump = 50,')).toBeNull();
+            expect(container.querySelector('[data-diff-kind]')).toBeNull();
+            // Compact means no expander: there is no args/source dump behind a chevron either.
+            expect(screen.queryByRole('button')).toBeNull();
         });
 
-        it('does NOT dump the tool arguments — the diff is the payload', () => {
+        it('does NOT dump the tool arguments', () => {
             render(<ToolCallCard call={editCall()} />);
 
-            // The old card printed an args JSON block; the source text appearing as a raw blob is
-            // exactly what this change removes. `path` may appear in the header, never as a label.
             expect(screen.queryByText('Tham số')).toBeNull();
             expect(screen.queryByText('Kết quả')).toBeNull();
             expect(screen.queryByText(/"old":/)).toBeNull();
+        });
+
+        it('shows the target path while the call is still running', () => {
+            // The args stream before the result, so the process row is useful during the turn.
+            render(<ToolCallCard call={editCall({ status: 'running', result: undefined })} />);
+
+            expect(screen.getByText('src/ReplicatedStorage/Config.lua')).toBeInTheDocument();
+            expect(screen.getByText('Đang chạy')).toBeInTheDocument();
         });
 
         it('keeps the non-edit tools on the compact card with args and result', () => {

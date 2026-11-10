@@ -32,13 +32,27 @@ export const EDIT_TOOL_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Split a payload into logical lines, dropping the empty element a terminating newline leaves
+ * behind. Without this, `'return {}\n'` and `'return {\n…\n}\n'` both end in `''`, the LCS matches
+ * those two terminators, and the renderer prints a ghost row holding only line numbers.
+ *
+ * Exactly one element is dropped: `'a\n\n'` still keeps its genuine trailing blank line.
+ */
+function splitLines(text: string): string[] {
+  if (text === '') return [];
+  const lines = text.split('\n');
+  if (lines[lines.length - 1] === '') lines.pop();
+  return lines;
+}
+
+/**
  * Tiny line LCS for the diff viewer. Capped: a file over 2000 lines falls back to
  * "all added / all removed", which is still truthful about churn and avoids an O(n·m)
  * allocation on a pathological input.
  */
 export function diffLines(oldText: string, newText: string): { ops: DiffOp[]; added: number; removed: number } {
-  const oldLines = oldText.length ? oldText.split('\n') : [];
-  const newLines = newText.length ? newText.split('\n') : [];
+  const oldLines = splitLines(oldText);
+  const newLines = splitLines(newText);
   if (oldLines.length > 2000 || newLines.length > 2000) {
     return {
       ops: newLines.map((text, index) => ({ kind: 'add' as const, oldNo: 0, newNo: index + 1, text })),
@@ -79,6 +93,8 @@ export interface FileChange {
   added: number;
   removed: number;
   ops: DiffOp[];
+  /** Status of the call that produced this change; absent on hand-built fixtures. */
+  status?: DerivedToolCall['status'];
 }
 
 const textOf = (record: Record<string, unknown>, keys: readonly string[]): string => {
@@ -105,11 +121,11 @@ function changeOfArgs(args: Record<string, unknown>): FileChange | null {
 }
 
 /**
- * Every file change a single tool call made. `studio.multi_edit` carries an array (either at
- * `args.edits` or as the args value itself), so one call can yield many files.
+ * Every file change a single tool call describes, regardless of its status. Used by the compact
+ * process card, which shows the target path while the call is still running (the args have already
+ * streamed in). The aggregate summary goes through `changesOfCall`, which only counts settled calls.
  */
-export function changesOfCall(call: DerivedToolCall): FileChange[] {
-  if (call.status !== 'done' && call.status !== 'error') return [];
+export function changeTargetsOfCall(call: DerivedToolCall): FileChange[] {
   if (!EDIT_TOOL_NAMES.has(call.name)) return [];
   const args = call.args;
   if (Array.isArray(args)) {
@@ -133,6 +149,16 @@ export function changesOfCall(call: DerivedToolCall): FileChange[] {
   }
   const single = changeOfArgs(record);
   return single ? [single] : [];
+}
+
+/**
+ * Every file change a single settled tool call made, with its status attached. `studio.multi_edit`
+ * carries an array (either at `args.edits` or as the args value itself), so one call can yield
+ * many files.
+ */
+export function changesOfCall(call: DerivedToolCall): FileChange[] {
+  if (call.status !== 'done' && call.status !== 'error') return [];
+  return changeTargetsOfCall(call).map((change) => ({ ...change, status: call.status }));
 }
 
 export interface TurnChangeSummary {

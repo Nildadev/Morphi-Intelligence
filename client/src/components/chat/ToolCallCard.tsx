@@ -4,8 +4,9 @@ import { ChevronDown, FileText, ShieldAlert, ShieldCheck, Wrench } from '../icon
 import type { DerivedApproval, DerivedToolCall } from '../../types';
 import { vi } from '../../i18n/vi';
 import { cn } from '../../utils';
-import { changesOfCall, type FileChange } from '../../lib/turnChanges';
+import { changeTargetsOfCall, EDIT_TOOL_NAMES } from '../../lib/turnChanges';
 import { STUDIO_ICONS, TOOL_ICONS } from './toolIcons';
+import { statusLabel, STATUS_CLASS } from './toolStatus';
 
 /**
  * Server-side cap: `server/src/harness/tools/pipeline.ts:8` (`MAX_TOOL_OUTPUT_CHARS = 50_000`).
@@ -21,22 +22,6 @@ export const MAX_TOOL_OUTPUT_CHARS = 50_000;
  */
 export const toolLabel = (name: string, measured?: string): string =>
     measured ?? (vi.chat.toolLabels as Record<string, string>)[name] ?? `${vi.chat.toolFallback} ${name.replace(/_/g, ' ')}`;
-
-function statusLabel(status: DerivedToolCall['status']): string {
-    return {
-        running: vi.chat.statusRunning,
-        done: vi.chat.statusDone,
-        error: vi.chat.statusError,
-        cancelled: vi.chat.statusCancelled,
-    }[status];
-}
-
-const STATUS_CLASS: Record<DerivedToolCall['status'], string> = {
-    running: 'text-brand-text',
-    done: 'text-success-text',
-    error: 'text-danger-text',
-    cancelled: 'text-text-tertiary',
-};
 
 const APPROVAL_LABEL = (decision: DerivedApproval['decision']): string => {
     if (decision === 'allow') return vi.chat.approvalAllowed;
@@ -68,52 +53,55 @@ const isTruncated = (result: unknown): boolean =>
     typeof result === 'string' && result.length >= MAX_TOOL_OUTPUT_CHARS;
 
 /**
- * The diff helpers live in `lib/turnChanges` so this card and the turn summary cannot drift:
- * one LCS, one set of edit-tool names, one "last write wins" rule. `diffLines` is re-exported
- * because existing tests import it from here.
+ * An edit call is a file change, but the full diff is the *outcome* of the turn and belongs to
+ * the end-of-message `TurnWorkSummary` block — the single place a diff is rendered. Here the call
+ * is only part of the *process* narrative, so it stays a compact one-row card: icon, tool label,
+ * paths, churn and status. It deliberately has no expander: the args contain the old/new source,
+ * and dumping them would show the same change twice.
  */
-export { diffLines } from '../../lib/turnChanges';
+function CompactEditCard({ call }: { call: DerivedToolCall }) {
+    const studioName = call.name.startsWith('studio.') ? call.name.slice('studio.'.length) : call.name;
+    const Icon = TOOL_ICONS[call.name] ?? STUDIO_ICONS[studioName] ?? FileText;
+    const changes = changeTargetsOfCall(call);
+    const paths = changes.map((change) => change.path);
+    const added = changes.reduce((sum, change) => sum + change.added, 0);
+    const removed = changes.reduce((sum, change) => sum + change.removed, 0);
+    const hasChurn = changes.length > 0;
 
-/** File-diff for edit-type Studio tools (deepseek workspace-changes shape). */
-function fileDiffOf(call: DerivedToolCall): FileChange | null {
-    const [first] = changesOfCall(call);
-    return first ?? null;
-}
-
-/**
- * Diff body of an edit card — the hunk rows only. The path, churn and status live in the card's
- * header (see `ToolCallCard`), so this is not a card of its own.
- *
- * Line numbers are the two gutter columns the reference design shows: old on the left, new on the
- * right, blank on the side a line does not exist on. `select-none` keeps them out of a copy.
- */
-function DiffBody({ diff }: { diff: FileChange }) {
     return (
-        <div className="max-h-80 overflow-auto font-mono text-[12px] leading-5">
-            {diff.ops.length === 0 ? (
-                <p className="px-3 py-2 text-text-tertiary">{vi.chat.diffEmpty}</p>
-            ) : (
-                diff.ops.map((op, index) => {
-                    const prefix = op.kind === 'add' ? '+' : op.kind === 'del' ? '-' : ' ';
-                    const rowClass = op.kind === 'add'
-                        ? 'bg-success-bg text-text-primary'
-                        : op.kind === 'del'
-                            ? 'bg-danger-bg text-text-primary'
-                            : 'text-text-secondary';
-                    return (
-                        <div key={index} className={cn('flex', rowClass)}>
-                            <span className="w-10 shrink-0 select-none pr-2 text-right text-text-tertiary">
-                                {op.kind === 'del' || op.kind === 'eq' ? op.oldNo || '' : ''}
-                            </span>
-                            <span className="w-10 shrink-0 select-none pr-2 text-right text-text-tertiary">
-                                {op.kind === 'add' || op.kind === 'eq' ? op.newNo || '' : ''}
-                            </span>
-                            <span className="w-4 shrink-0 select-none">{prefix}</span>
-                            <span className="whitespace-pre-wrap break-all">{op.text}</span>
-                        </div>
-                    );
-                })
+        <div
+            className={cn(
+                'flex h-8 w-full items-center gap-2 overflow-hidden rounded-lg border bg-bg-card px-2',
+                call.status === 'error' ? 'border-danger-text' : 'border-border',
             )}
+        >
+            <span className="flex h-5 w-5 shrink-0 items-center justify-center text-text-secondary">
+                <Icon aria-hidden="true" size={16} />
+            </span>
+            <span className="shrink-0 text-[13px] font-medium text-text-primary">{toolLabel(call.name, call.label)}</span>
+            {paths.length > 0 ? (
+                <span
+                    className="min-w-0 flex-1 truncate font-mono text-[12px] text-text-tertiary"
+                    title={paths.join('\n')}
+                >
+                    {paths.join(' · ')}
+                </span>
+            ) : (
+                <span className="min-w-0 flex-1" />
+            )}
+            {hasChurn ? (
+                <>
+                    <span className="shrink-0 font-mono text-[12px] font-semibold tabular-nums text-success-text">
+                        +{added}
+                    </span>
+                    <span className="shrink-0 font-mono text-[12px] font-semibold tabular-nums text-danger-text">
+                        −{removed}
+                    </span>
+                </>
+            ) : null}
+            <span className={cn('shrink-0 text-[11px] font-semibold', STATUS_CLASS[call.status])}>
+                {statusLabel(call.status)}
+            </span>
         </div>
     );
 }
@@ -222,34 +210,12 @@ export function ToolCallCard({ call, approval, progress }: ToolCallCardProps) {
     const Icon = TOOL_ICONS[call.name] ?? STUDIO_ICONS[studioName] ?? Wrench;
     const truncated = isTruncated(call.result);
     const liveProgress = call.status === 'running' ? progress : undefined;
-    const diff = fileDiffOf(call);
 
-    // An edit call is a FILE CHANGE, so it renders as the change itself: header row with the path
-    // and +A −D, body with the diff. The generic card (args JSON + result JSON) is the wrong shape
-    // for it — the user asked to see what changed, not the tool's parameters. Every other tool
-    // keeps the compact card, where args/result are the useful payload.
-    if (diff !== null) {
-        return (
-            <div
-                className={cn(
-                    'w-full overflow-hidden rounded-xl border bg-bg-card',
-                    call.status === 'error' ? 'border-danger-text' : 'border-border',
-                )}
-            >
-                <div className="flex h-9 items-center gap-2 border-b border-border bg-bg-inset px-3">
-                    <FileText size={14} aria-hidden="true" className="shrink-0 text-text-secondary" />
-                    <span className="min-w-0 flex-1 truncate font-mono text-[13px] text-text-primary" title={diff.path}>
-                        {diff.path}
-                    </span>
-                    <span className="shrink-0 font-mono text-[13px] font-semibold tabular-nums text-success-text">+{diff.added}</span>
-                    <span className="shrink-0 font-mono text-[13px] font-semibold tabular-nums text-danger-text">−{diff.removed}</span>
-                    <span className={cn('shrink-0 text-[11px] font-semibold', STATUS_CLASS[call.status])}>
-                        {statusLabel(call.status)}
-                    </span>
-                </div>
-                <DiffBody diff={diff} />
-            </div>
-        );
+    // The diff lives in `TurnWorkSummary` at the end of the message, not here: a diff must have
+    // exactly one home. The worked block narrates the call, so it gets the compact card even
+    // before the call settles (no args dump for a source edit either).
+    if (EDIT_TOOL_NAMES.has(call.name)) {
+        return <CompactEditCard call={call} />;
     }
 
     return (

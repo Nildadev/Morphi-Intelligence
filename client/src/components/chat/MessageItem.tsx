@@ -211,13 +211,6 @@ export function MessageItem({ message, toolProgress, isStreaming = false, onRege
                     </button>
                     <div className="border-b border-border" />
 
-                    {/* Outcome row: the activity block above narrates the work, this states the
-                      * result. Only rendered when the turn actually wrote something — a turn that
-                      * only read files shows no "0 files changed" line. */}
-                    {turnChanges !== null ? (
-                        <TurnWorkSummary summary={turnChanges} live={isStreaming || workedLive || !allSettled} />
-                    ) : null}
-
                     {activityOpen ? (
                         <div className="mt-1.5 space-y-1.5">
                             {workedEntries !== undefined ? (
@@ -285,6 +278,15 @@ export function MessageItem({ message, toolProgress, isStreaming = false, onRege
                     );
                 })}
             </div>
+
+            {/* Outcome row, at the END of the article: the worked block above is the process
+              * (thinking, tools, duration), the answer text in between is the conclusion, and
+              * this states what the turn actually changed. Only rendered when the turn wrote
+              * something — a read-only turn shows no "0 files changed" line. Intermediate rows
+              * have no activity calls (`hideActivity`), so they never render it. */}
+            {turnChanges !== null ? (
+                <TurnWorkSummary summary={turnChanges} live={isStreaming || workedLive || !allSettled} />
+            ) : null}
 
             {(message.content !== '' || onRegenerate !== undefined) && (
                 <footer className={cn(

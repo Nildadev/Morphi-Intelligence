@@ -143,17 +143,22 @@ export function ChatView({
     const hostIndexBySegment = new Map<number, number>();
     const finalAssistantBySegment = new Map<number, number>();
     for (const [segmentId, assistantIndices] of assistantIndicesBySegment) {
-        finalAssistantBySegment.set(segmentId, assistantIndices[assistantIndices.length - 1]!);
-        const hostIndex = assistantIndices.find((index) => {
+        const finalAssistant = assistantIndices[assistantIndices.length - 1]!;
+        finalAssistantBySegment.set(segmentId, finalAssistant);
+        // The worked block belongs to the row that also carries the conclusion text, so the
+        // finished turn reads in order: worked block (process) → answer → changed files
+        // (outcome, rendered by MessageItem after its text steps). Pinning it to the FIRST row
+        // with activity would leave the outcome summary above the answer.
+        const hasActivity = assistantIndices.some((index) => {
             const row = messages[index];
             return (row.reasoning !== undefined && row.reasoning !== '')
                 || row.steps.some((step) => step.type === 'call');
         });
-        if (hostIndex === undefined) continue;
+        if (!hasActivity) continue;
         const activity = aggregateTurnActivity(assistantIndices.map((index) => messages[index]));
         if (activity.calls.length > 0) {
-            hostIndexBySegment.set(segmentId, hostIndex);
-            turnActivityByHostIndex.set(hostIndex, activity);
+            hostIndexBySegment.set(segmentId, finalAssistant);
+            turnActivityByHostIndex.set(finalAssistant, activity);
         }
     }
     const hideActivityFor = (index: number, message: DerivedMessage): boolean => {

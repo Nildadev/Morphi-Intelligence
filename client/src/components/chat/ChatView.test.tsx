@@ -206,6 +206,46 @@ describe('ChatView', () => {
         expect(screen.getAllByRole('button', { name: /Đã làm trong/ })).toHaveLength(1);
     });
 
+    it('puts the changed-files outcome after the conclusion, not inside the worked block', () => {
+        // Production wiring test: the host row must be the row that carries the conclusion, so
+        // the finished turn reads worked block → answer → changed files.
+        const user: DerivedMessage = { id: 'u1', role: 'user', content: 'Sửa giúp', steps: [], createdAt: 1, superseded: false };
+        const toolRow: DerivedMessage = {
+            id: 'a1', role: 'assistant', content: '',
+            steps: [{
+                type: 'call',
+                call: {
+                    callId: 'c1', name: 'studio.edit_script', status: 'done', durationMs: 1000,
+                    args: { path: 'src/Config.lua', old: 'return {}\n', source: 'return {\n  speed = 16,\n}\n' },
+                },
+            }],
+            createdAt: 2, superseded: false,
+        };
+        const conclusion: DerivedMessage = {
+            id: 'a2', role: 'assistant', content: 'Đã sửa xong',
+            steps: [{ type: 'text', content: 'Đã sửa xong' }],
+            createdAt: 3, superseded: false,
+        };
+
+        const { container } = render(<ChatView {...props} messages={[user, toolRow, conclusion]} />);
+
+        const text = container.textContent ?? '';
+        const workedAt = text.indexOf('Đã làm trong');
+        const answerAt = text.indexOf('Đã sửa xong');
+        const summaryAt = text.indexOf('1 tệp thay đổi');
+        expect(workedAt).toBeGreaterThanOrEqual(0);
+        expect(answerAt).toBeGreaterThanOrEqual(0);
+        expect(summaryAt).toBeGreaterThanOrEqual(0);
+        expect(workedAt).toBeLessThan(answerAt);
+        expect(answerAt).toBeLessThan(summaryAt);
+
+        // Exactly one summary row for the turn, and it is not a descendant of the worked button.
+        const summaries = screen.getAllByRole('button', { name: /1 tệp thay đổi/ });
+        expect(summaries).toHaveLength(1);
+        const worked = screen.getByRole('button', { name: /Đã làm trong/ });
+        expect(worked.contains(summaries[0]!)).toBe(false);
+    });
+
     it('keeps an interleaved thinking → tool → spoken-text timeline in the worked block', () => {
         const user: DerivedMessage = { id: 'u1', role: 'user', content: 'Làm giúp', steps: [], createdAt: 1, superseded: false };
         const toolRow: DerivedMessage = {
