@@ -41,6 +41,11 @@ function getSnapshot(): Theme {
 function write(theme: Theme): void {
     current = theme;
     document.documentElement.classList.toggle('dark', theme === 'dark');
+    // Keep the pre-paint attribute in sync: `index.html` reads `data-theme` before any module
+    // loads so the splash screen matches the theme instead of flashing dark on a light UI.
+    // Without this line the first toggle would persist the new theme but the next reload's
+    // splash would still use the value written at load time.
+    document.documentElement.setAttribute('data-theme', theme);
     try {
         localStorage.setItem(THEME_KEY, theme);
     } catch {
@@ -54,6 +59,9 @@ export function useTheme() {
 
     useEffect(() => {
         document.documentElement.classList.toggle('dark', current === 'dark');
+        // The inline script in index.html resolves this before first paint; re-assert it here
+        // so the DOM always reflects the store even if that script ran with a stale value.
+        document.documentElement.setAttribute('data-theme', current);
     });
 
     // Keep the Electron titlebar overlay on the same theme as the strip (no-op outside Electron).

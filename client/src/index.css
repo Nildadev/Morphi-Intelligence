@@ -89,6 +89,49 @@
 
   /* Chỉ shadow trung tính nhẹ (spec: "shadow nhẹ", không glass/tím/xanh). */
   --shadow-premium: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+
+  /* ============================================================================
+   * Typography scale — ported from ZCode (@zcode/ui, Apache-2.0).
+   *
+   * Source: https://github.com/zai-org/ZCode — packages/ui/src/styles.css
+   * (`--text-ui-*` block) and DESIGN.md "UI font tokens". Ported additively:
+   * no existing token was renamed or repointed, so every current
+   * `text-[Npx]` call site keeps compiling and rendering exactly as before.
+   * This scale is the sanctioned replacement when those sites are migrated.
+   *
+   * WHY `calc()` off a single `--ui-font-size`: one knob scales the whole
+   * interface hierarchy and the per-level offsets stay fixed. DESIGN.md forbids
+   * implementing UI font scaling by mutating `html`/`font-size` — only that
+   * variable moves.
+   *
+   * These MUST live in `@theme`: Tailwind 4 only generates a utility from a
+   * token declared here. Default 14px reproduces Morphi's current hierarchy
+   * (13/12/14/16-ish) while giving every level a named role.
+   * ========================================================================== */
+  --text-ui-xl: calc(var(--ui-font-size) + 4px);
+  --text-ui-lg: calc(var(--ui-font-size) + 2px);
+  --text-ui-base: var(--ui-font-size);
+  --text-ui-caption: calc(var(--ui-font-size) - 1px);
+  --text-ui-sm: calc(var(--ui-font-size) - 2px);
+  --text-ui-xs: calc(var(--ui-font-size) - 4px);
+  /* ZCode exception scale — workflow axis labels only, never content. */
+  --text-ui-2xs: calc(var(--ui-font-size) - 5px);
+
+  /* Settings headings keep their own role so a settings title never borrows the
+   * content scale (DESIGN.md: "shared Settings section heading may use the
+   * dedicated role"). */
+  --text-ui-settings-title: calc(var(--ui-font-size) + 10px);
+  --text-ui-settings-title--line-height: calc(4 / 3);
+  --text-ui-settings-title-lg: calc(var(--ui-font-size) + 16px);
+  --text-ui-settings-title-lg--line-height: 1.2;
+
+  /* Micro-label letter spacing for uppercase monospace tags (ZCode:
+   * `--tracking-wf-label`). */
+  --tracking-wf-label: 0.09em;
+
+  /* iOS Safari zooms focused inputs below 16px; this floor must NOT follow
+   * `--ui-font-size` down. */
+  --text-mobile-input-safe: 16px;
 }
 
 :root {
@@ -174,6 +217,12 @@
   /* Phán quyết U8/U10 — rail rộng 52px và đây là LITERAL BỀ NGANG DUY NHẤT. Rail.tsx và scrim/drawer
    * của AppShell đều đọc lại qua `var(--rail-width)`, không chỗ nào tự viết số. */
   --rail-width: 52px;
+
+  /* One knob for the whole interface type hierarchy (ported from ZCode, see the
+   * `@theme` typography block above). Changing THIS scales every `text-ui-*`
+   * level; never mutate `html`/`font-size` instead (DESIGN.md rule). Kept in
+   * `:root` because it is the input to `calc()`, not a utility source. */
+  --ui-font-size: 14px;
 }
 
 .dark {

@@ -6,16 +6,27 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Morphi Intelligence</title>
     <style>
-      html, body { margin: 0; height: 100%; background: #171717; }
+      /* Pre-paint surface. These values MUST match --bg-main / --text-primary /
+       * --accent in src/index.css, because this stylesheet paints before any
+       * module loads (that is the point: no white flash on a dark theme).
+       *
+       * The theme is resolved by the inline script below from the same
+       * `morphi.theme` key `useTheme` persists, so a light-mode user no longer
+       * sees a dark splash on every load. `data-theme` is set on <html> before
+       * first paint and the attribute selectors here do the switching — no
+       * React, no custom-property timing dependency. */
+      html, body { margin: 0; height: 100%; background: #181818; }
+      html[data-theme='light'], html[data-theme='light'] body { background: #ffffff; }
       #morphi-loading {
         position: fixed;
         inset: 0;
         display: flex;
         align-items: center;
         justify-content: center;
-        background: #171717;
+        background: #181818;
         z-index: 9999;
       }
+      html[data-theme='light'] #morphi-loading { background: #ffffff; }
       #morphi-loading svg {
         width: 72px;
         height: 72px;
@@ -24,11 +35,12 @@
       }
       #morphi-loading .morphi-loading-name {
         margin-top: 16px;
-        color: #f3f3f3;
+        color: #ececec;
         font: 600 15px system-ui, -apple-system, "Segoe UI", sans-serif;
         letter-spacing: 0.02em;
         text-align: center;
       }
+      html[data-theme='light'] #morphi-loading .morphi-loading-name { color: #0d0d0d; }
       @keyframes morphi-loading-pulse {
         0%, 100% { opacity: 0.55; transform: scale(0.96); }
         50% { opacity: 1; transform: scale(1); }
@@ -37,6 +49,23 @@
         #morphi-loading svg { animation: none; }
       }
     </style>
+    <script>
+      /* Resolve the theme BEFORE the body paints. Mirrors useTheme's precedence:
+       * stored value, then the OS preference, then dark (this splash's default).
+       * try/catch: private-mode storage access can throw, and a splash that fails
+       * to resolve must still render rather than blank the app. */
+      (function () {
+        try {
+          var stored = localStorage.getItem('morphi.theme');
+          var theme = stored === 'light' || stored === 'dark'
+            ? stored
+            : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+          document.documentElement.setAttribute('data-theme', theme);
+        } catch (error) {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root">

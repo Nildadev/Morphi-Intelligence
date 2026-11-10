@@ -67,6 +67,10 @@ describe('useTheme', () => {
         expect(screen.getByTestId('header-theme')).toHaveTextContent('light');
         expect(screen.getByTestId('settings-theme')).toHaveTextContent('light');
         expect(document.documentElement.classList.contains('dark')).toBe(false);
+        // `index.html` paints the loading splash before any module runs and reads this attribute.
+        // Without the write here, a light-mode user's NEXT reload would flash the dark splash
+        // even though the stored theme says light.
+        expect(document.documentElement.getAttribute('data-theme')).toBe('light');
     });
 
     it('prefers the stored value over the OS preference', async () => {

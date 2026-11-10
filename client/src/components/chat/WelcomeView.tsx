@@ -29,7 +29,7 @@ export function WelcomeView({ onSuggestion, disabled = false, projectName }: Wel
                 <h1 className="text-[32px] font-normal leading-tight text-text-primary">
                     {vi.welcome.greeting}
                 </h1>
-                <p className="mt-3 max-w-[520px] text-[14px] leading-6 text-text-secondary">
+                <p className="mt-3 max-w-[520px] text-ui-base leading-6 text-text-secondary">
                     {projectName
                         ? vi.welcome.projectHint.replace('{project}', projectName)
                         : vi.welcome.subtitle}
