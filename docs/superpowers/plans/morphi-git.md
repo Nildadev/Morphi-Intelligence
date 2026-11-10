@@ -125,8 +125,49 @@ Implemented:
 
 Not yet implemented (deliberately not faked):
 
-- Pre-mutation state snapshots (script source, instance properties) via MCP reads.
-- Inverse/restore engine (Phase 3), diff rendering, and the history browser UI (Phase 4).
+- ~~Pre-mutation state snapshots (script source, instance properties) via MCP reads.~~ **Done in Phase 3.**
+- ~~Inverse/restore engine (Phase 3)~~ **Done in Phase 3.**
+- Diff rendering and the history browser UI (Phase 4).
+
+## Phase 3 — implemented: pre-state snapshots + restore engine
+
+Implemented:
+
+- `server/src/harness/checkpoints/snapshot.ts`
+  - `snapshotPreState(mcp, toolName, args)` runs BEFORE the mutating call and reads what the
+    call is about to overwrite:
+    - script writes → `studio.script_read` (also `studio.read_script`, `script_read`), storing
+      the exact old source;
+    - inserts (`insert_asset` / `insert_instance`, and a `create_script` with no readable old
+      source) → the inverse is a delete of the inserted path;
+    - other mutating tools → `studio.inspect_instance` property bag when available.
+  - `studio.multi_edit` expands into one entry/inverse per touched path.
+  - `isRestorable` is true only when EVERY touched target produced an inverse step. A single
+    unreadable target downgrades the whole checkpoint — a partial restore is not an undo.
+  - Every refusal writes a specific Vietnamese reason (which tool, which path, why).
+- `CheckpointManifest.preState` is now a real snapshot (or null), and `restorable` is derived
+  from it rather than hardcoded false. `ToolPipeline` takes the snapshot before executing and
+  records it after (best-effort: a failed snapshot never blocks the user's call).
+- `server/src/harness/checkpoints/restore.ts`
+  - `previewRestore` re-reads the live workspace and returns the inverse plan plus drift notes;
+    refuses `NOT_FOUND`, `NOT_RESTORABLE`, `STUDIO_NOT_CONNECTED`, `ALREADY_RESTORED`,
+    `IN_PROGRESS`.
+  - `applyRestore` writes each inverse, then RE-READS to verify. A tool answering OK is not
+    proof: mismatched read-back marks the checkpoint `restore-failed`.
+  - Drift found in the preview is a refusal, so a hand edit made after the checkpoint is never
+    overwritten (plan safety rule).
+  - Status is one-way: `recorded` → `restoring` → `restored` | `restore-failed`.
+- Routes: `GET /api/sessions/:id/checkpoints/:checkpointId/restore` (preview, read-only) and
+  `POST …/restore` (apply). A checkpoint from another session is a 404.
+- Tests: 10 snapshot, 12 restore-engine, 1 pipeline (restorable path), 1 route (preview + apply
+  + audit-only refusal + cross-session 404). Server suite 690/690.
+
+Still not implemented (Phase 4):
+
+- Client UI for previewing/triggering a restore from the transcript or a history browser.
+- Property drift comparison before restore (only script source is diffed today; the preview says
+  so in its notes instead of implying a check that did not run).
+- Deleted-instance recreation (needs children/properties capture, a separate snapshot shape).
 
 ## Post-Phase-2 notes (live verified)
 

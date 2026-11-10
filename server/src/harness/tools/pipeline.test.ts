@@ -166,7 +166,48 @@ describe('ToolPipeline dispatch', () => {
       outcome: 'ok',
       restorable: false,
     });
-    expect(rows[0].manifest.restoreReason).toContain('không có inverse');
+    expect(rows[0].manifest.restorable).toBe(false);
+    // Phase 3: the reason is produced by the snapshot module and names the real limitation — this
+    // context has no Studio read tool, so no pre-state could be captured.
+    expect(rows[0].manifest.restoreReason).toContain('Không đọc được');
+    expect(rows[0].manifest.preState).not.toBeNull();
+    db.close();
+  });
+
+  it('captures a restorable snapshot when the Studio read tool is available', async () => {
+    const db = createTestDb();
+    db.prepare('INSERT INTO projects (id, name, created_at, last_active) VALUES (?, ?, ?, ?)').run('p1', 'P', 1, 1);
+    db.prepare('INSERT INTO sessions (id, project_id, created_at, last_updated) VALUES (?, ?, ?, ?)').run('s1', 'p1', 1, 1);
+    const checkpoints = new CheckpointStore(db);
+    const registry = new ToolRegistry([
+      def('studio.write_script', async () => ({ ok: true }), {
+        isConcurrencySafe: false,
+        presentation: { label: 'Ghi script', risk: 'medium' },
+      }),
+    ]);
+    // The read tool answers the OLD source — exactly what a restore must write back.
+    const withRead: ToolRunContext['mcp'] = {
+      ...NO_MCP,
+      connected: true,
+      studioLinked: true,
+      listTools: async () => [{ name: 'studio.script_read', description: 'read', parameters: { type: 'object' } }],
+      callTool: async () => 'local Old = {}\nreturn Old',
+    };
+    const emit = fakeEmit();
+
+    const results = await new ToolPipeline(registry, new ApprovalService(), undefined, undefined, checkpoints).run(
+      [call('c1', 'studio.write_script', { path: 'ServerScriptService/Main', source: 'local New = {}' })],
+      { ...runContext(emit.emit), mcp: withRead },
+    );
+
+    expect(results.map((entry) => entry.status)).toEqual(['done']);
+    const [row] = checkpoints.list('s1');
+    expect(row.manifest.restorable).toBe(true);
+    expect(row.manifest.preState).toMatchObject({
+      entries: [{ kind: 'script', path: 'ServerScriptService/Main', source: 'local Old = {}\nreturn Old' }],
+      inverse: [{ tool: 'script_write', path: 'ServerScriptService/Main', source: 'local Old = {}\nreturn Old' }],
+    });
+    expect(row.manifest.restoreReason).toContain('có thể khôi phục');
     db.close();
   });
 

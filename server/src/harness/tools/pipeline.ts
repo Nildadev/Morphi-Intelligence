@@ -5,6 +5,7 @@ import type { SpillStore } from '../spill/store';
 import type { ApprovalService } from './approval';
 import type { ToolRegistry } from './registry';
 import { extractTargets, hashArgs, type CheckpointStore } from '../checkpoints/store';
+import { isRestorable, snapshotPreState } from '../checkpoints/snapshot';
 import type { ToolContext, ToolDefinition, ToolImage, ToolResultStatus, ToolRunContext, ToolRunResult } from './types';
 import { isToolImageOutput } from './types';
 
@@ -363,11 +364,17 @@ export class ToolPipeline {
     }
     const snapshotted =
       this.checkpoints !== undefined && tool.name.startsWith('studio.') && tool.presentation.risk !== 'low';
+    // Phase 3: capture the pre-state BEFORE the mutation, so an inverse exists to offer. Best-effort:
+    // a failed read only downgrades the checkpoint to non-restorable, it never blocks the call.
+    const preState = snapshotted
+      ? await snapshotPreState(context.mcp, tool.name, call.args, context.signal)
+      : null;
     const result = await this.execute(tool, call, context, started, gate);
     // Phase 2: audit the mutation. Recording never changes the turn's result — a
     // store failure must not turn a successful tool call into an error.
     if (snapshotted) {
       try {
+        const restorable = preState !== null && isRestorable(preState);
         this.checkpoints!.record({
           sessionId: context.sessionId,
           label: `${tool.presentation.label} · ${tool.name}`,
@@ -377,10 +384,14 @@ export class ToolPipeline {
             argsHash: hashArgs(call.args),
             targets: extractTargets(call.args),
             outcome: result.status === 'done' ? 'ok' : result.status === 'cancelled' ? 'cancelled' : 'error',
-            // No pre-state snapshot was taken, so no inverse is claimed (plan safety rule).
-            preState: null,
-            restorable: false,
-            restoreReason: 'Chưa chụp snapshot trước khi sửa — không có inverse rõ ràng để khôi phục an toàn.',
+            preState,
+            restorable,
+            // Shown to the user verbatim, so it names the actual limitation instead of a generic
+            // "cannot undo" — the snapshot module already wrote the precise reason.
+            restoreReason: restorable
+              ? 'Đã chụp trạng thái trước khi sửa — có thể khôi phục.'
+              : (preState?.notes[0]
+                ?? 'Chưa chụp được snapshot trước khi sửa — không có inverse rõ ràng để khôi phục an toàn.'),
           },
         });
       } catch (error) {

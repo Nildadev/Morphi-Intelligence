@@ -373,6 +373,94 @@ describe('sessions routes', () => {
     expect(missing.status).toBe(404);
   });
 
+  it('previews and applies a restore, and refuses one that cannot be undone', async () => {
+    const { harness, mcp } = buildHarness();
+    const app = buildApp(harness);
+    const project = await createProject(app);
+    const session = await createSession(app, project.id);
+
+    // A restorable checkpoint: the pre-state holds the OLD source, the inverse writes it back.
+    const restorable = harness.checkpoints.record({
+      sessionId: session.id,
+      label: 'Ghi script · studio.write_script',
+      manifest: {
+        tool: 'studio.write_script',
+        callId: 'c1',
+        argsHash: 'h1',
+        targets: ['A'],
+        outcome: 'ok',
+        preState: {
+          entries: [{ kind: 'script', path: 'A', source: 'old' }],
+          inverse: [{ tool: 'script_write', path: 'A', source: 'old' }],
+          notes: [],
+        },
+        restorable: true,
+        restoreReason: 'ok',
+      },
+    });
+    // A non-restorable one: an audit record with no inverse.
+    const auditOnly = harness.checkpoints.record({
+      sessionId: session.id,
+      label: 'Sửa nhiều đoạn script · studio.multi_edit',
+      manifest: {
+        tool: 'studio.multi_edit',
+        callId: 'c2',
+        argsHash: 'h2',
+        targets: ['B'],
+        outcome: 'ok',
+        preState: null,
+        restorable: false,
+        restoreReason: 'Chưa chụp được snapshot trước khi sửa.',
+      },
+    });
+
+    // Studio is not linked in this stub, so the engine refuses before reading anything.
+    const offline = await api(app).get(`/api/sessions/${session.id}/checkpoints/${restorable.id}/restore`);
+    expect(offline.status).toBe(409);
+    expect(offline.body).toMatchObject({ error: { code: 'STUDIO_NOT_CONNECTED' } });
+
+    mcp.connected = true;
+    mcp.studioLinked = true;
+    mcp.tools = [
+      { name: 'studio.script_read', description: 'read', parameters: { type: 'object' } },
+      { name: 'studio.write_script', description: 'write', parameters: { type: 'object' } },
+    ];
+    // The live source differs from the snapshot, so there is something to restore. The write
+    // actually changes what a later read returns — otherwise the engine's read-back verification
+    // (correctly) refuses to call the restore a success.
+    let live = 'new';
+    mcp.calls = [];
+    mcp.callTool = async (name: string, args: unknown) => {
+      mcp.calls.push({ name, args });
+      if (name === 'studio.script_read') return live;
+      live = (args as { source: string }).source;
+      return { ok: true };
+    };
+
+    const preview = await api(app).get(`/api/sessions/${session.id}/checkpoints/${restorable.id}/restore`);
+    expect(preview.status).toBe(200);
+    expect(preview.body).toMatchObject({
+      clean: true,
+      steps: [{ path: 'A', action: 'restore-script' }],
+    });
+
+    const applied = await api(app).post(`/api/sessions/${session.id}/checkpoints/${restorable.id}/restore`);
+    expect(applied.status).toBe(200);
+    expect(applied.body).toMatchObject({ status: 'restored', applied: 1, failed: [] });
+    expect(harness.checkpoints.get(restorable.id)?.status).toBe('restored');
+    expect(mcp.calls).toContainEqual({ name: 'studio.write_script', args: { path: 'A', source: 'old' } });
+
+    // An audit-only checkpoint is refused by its own reason, not attempted.
+    const refused = await api(app).get(`/api/sessions/${session.id}/checkpoints/${auditOnly.id}/restore`);
+    expect(refused.status).toBe(409);
+    expect(refused.body).toMatchObject({ error: { code: 'NOT_RESTORABLE' } });
+
+    // A checkpoint from another session is a 404, never a cross-session restore.
+    const other = await createSession(app, project.id);
+    const foreign = await api(app).get(`/api/sessions/${other.id}/checkpoints/${restorable.id}/restore`);
+    expect(foreign.status).toBe(404);
+  });
+
   it('replays events after a sequence number', async () => {
     const { harness } = buildHarness();
     const app = buildApp(harness);

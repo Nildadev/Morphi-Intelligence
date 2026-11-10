@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import type { PreStateSnapshot } from './snapshot';
 
 /**
  * Phase 2 of `docs/superpowers/plans/morphi-git.md`: an immutable audit record for one
@@ -15,8 +16,16 @@ export interface CheckpointManifest {
   /** Best-effort target identifiers extracted from the call arguments. */
   targets: string[];
   outcome: 'ok' | 'error' | 'cancelled' | 'denied';
-  preState: null;
-  restorable: false;
+  /**
+   * Phase 3: what the targets looked like BEFORE the mutation, when a read could capture them.
+   * `null` means no snapshot was taken; the checkpoint is then an audit record only.
+   */
+  preState: PreStateSnapshot | null;
+  /**
+   * True only when every touched target produced a known inverse step (see `snapshot.ts`).
+   * The plan's safety rule: never claim undoability that is not backed by a snapshot.
+   */
+  restorable: boolean;
   restoreReason: string;
 }
 
@@ -28,8 +37,11 @@ export interface WorkspaceCheckpoint {
   baseEventSeq: number | null;
   rootHash: string;
   manifest: CheckpointManifest;
-  status: string;
+  status: CheckpointStatus;
 }
+
+/** Lifecycle of a checkpoint. Only `restored` means the workspace was put back. */
+export type CheckpointStatus = 'recorded' | 'restoring' | 'restored' | 'restore-failed';
 
 export interface RecordCheckpointInput {
   sessionId: string;
@@ -74,6 +86,15 @@ export class CheckpointStore {
     ).get(id) as Record<string, unknown> | undefined;
     return row ? toCheckpoint(row) : undefined;
   }
+
+  /**
+   * Phase 3: status transitions are one-way and explicit — `recorded` → `restoring` →
+   * `restored` | `restore-failed`. A checkpoint is never marked `restored` optimistically; the
+   * restore engine calls this only after re-reading the target and seeing the old state back.
+   */
+  setStatus(id: string, status: CheckpointStatus): void {
+    this.db.prepare('UPDATE workspace_checkpoints SET status = ? WHERE id = ?').run(status, id);
+  }
 }
 
 function toCheckpoint(row: Record<string, unknown>): WorkspaceCheckpoint {
@@ -85,7 +106,7 @@ function toCheckpoint(row: Record<string, unknown>): WorkspaceCheckpoint {
     baseEventSeq: (row.base_event_seq as number | null) ?? null,
     rootHash: row.root_hash as string,
     manifest: JSON.parse(row.manifest as string) as CheckpointManifest,
-    status: row.status as string,
+    status: row.status as CheckpointStatus,
   };
 }
 

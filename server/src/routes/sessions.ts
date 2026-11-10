@@ -1,6 +1,7 @@
 import { Router, type Request } from 'express';
 import { z } from 'zod';
 import type { Harness } from '../harness/harness';
+import { applyRestore, previewRestore } from '../harness/checkpoints/restore';
 import { createId } from '../harness/shared/id';
 import { setPlanMode } from '../harness/plan/mode';
 import { SubagentBusyError, SubagentDepthError } from '../harness/subagents';
@@ -78,6 +79,38 @@ export function createSessionsRouter(harness: Harness): Router {
     const id = sessionIdOf(req);
     requireSession(harness, id);
     res.json(harness.checkpoints.list(id));
+  }));
+
+  /**
+   * Phase 3 — restore preview. Read-only: it re-reads the live workspace to report drift and the
+   * exact inverse steps, so the user sees the plan before anything is written. A checkpoint that
+   * cannot be restored answers 409 with the reason instead of pretending.
+   */
+  router.get('/:id/checkpoints/:checkpointId/restore', api(async (req, res) => {
+    const id = sessionIdOf(req);
+    requireSession(harness, id);
+    const checkpointId = pathParam(req.params.checkpointId, 'checkpointId');
+    const checkpoint = harness.checkpoints.get(checkpointId);
+    if (checkpoint === undefined || checkpoint.sessionId !== id) throw new HttpError(404, 'CHECKPOINT_NOT_FOUND');
+    const previewed = await previewRestore(harness.mcp, harness.checkpoints, checkpointId);
+    if (!previewed.ok) throw new HttpError(409, previewed.reason);
+    res.json(previewed.preview);
+  }));
+
+  /**
+   * Phase 3 — execute the restore. The engine refuses when the preview found drift, so a hand edit
+   * made after the checkpoint is never overwritten. The checkpoint reaches `restored` only after the
+   * write was read back and verified.
+   */
+  router.post('/:id/checkpoints/:checkpointId/restore', api(async (req, res) => {
+    const id = sessionIdOf(req);
+    requireSession(harness, id);
+    const checkpointId = pathParam(req.params.checkpointId, 'checkpointId');
+    const checkpoint = harness.checkpoints.get(checkpointId);
+    if (checkpoint === undefined || checkpoint.sessionId !== id) throw new HttpError(404, 'CHECKPOINT_NOT_FOUND');
+    const restored = await applyRestore(harness.mcp, harness.checkpoints, checkpointId);
+    if (!restored.ok) throw new HttpError(409, restored.reason);
+    res.json(restored.result);
   }));
 
   router.post('/:id/pin', api((req, res) => {
