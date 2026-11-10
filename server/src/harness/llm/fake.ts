@@ -19,6 +19,9 @@ export const FAKE_SCRIPTS = [
   // Task 31C demo scripts: they call the REAL Studio MCP surface through the harness, so the tool
   // card, the approval gate and the result text are produced by production code, not by the fake.
   'studio-state', 'studio-insert',
+  // Workspace-change demo: calls a fake `studio.edit_script` so the turn-work summary
+  // ("N tệp thay đổi +A −D") can be exercised end-to-end without a Roblox Studio connection.
+  'studio-edit',
 ] as const;
 export type FakeScript = (typeof FAKE_SCRIPTS)[number];
 
@@ -120,6 +123,45 @@ async function* fakeStream(request: LlmRequest, fallback: FakeScript, slowDelay:
     if (signal.aborted) return;
     yield { type: 'tool_call_end', callId: 'fake_studio_2', name: 'studio.insert_asset', args };
     yield { type: 'finish', reason: 'tool_calls' };
+    return;
+  }
+
+  if (script === 'studio-edit' && !answered.has('fake_edit_1')) {
+    // Two edits to the SAME file: the summary must count it once (last write wins) while the
+    // per-file churn reflects the final content. A second, distinct file proves the aggregate
+    // sums across files. Both calls are `auto`, so the turn settles in one round.
+    const firstArgs = {
+      path: 'src/ServerScriptService/Combat.lua',
+      old: '',
+      source: 'local Combat = {}\n\nreturn Combat',
+    };
+    yield { type: 'tool_call_start', callId: 'fake_edit_1', name: 'studio.edit_script' };
+    if (signal.aborted) return;
+    yield { type: 'tool_call_delta', callId: 'fake_edit_1', argsDelta: JSON.stringify(firstArgs) };
+    if (signal.aborted) return;
+    yield { type: 'tool_call_end', callId: 'fake_edit_1', name: 'studio.edit_script', args: firstArgs };
+    yield { type: 'finish', reason: 'tool_calls' };
+    return;
+  }
+
+  if (script === 'studio-edit' && !answered.has('fake_edit_2')) {
+    const secondArgs = {
+      path: 'src/ReplicatedStorage/Config.lua',
+      old: 'return {}\n',
+      source: 'return {\n  speed = 16,\n  jump = 50,\n}\n',
+    };
+    yield { type: 'tool_call_start', callId: 'fake_edit_2', name: 'studio.edit_script' };
+    if (signal.aborted) return;
+    yield { type: 'tool_call_delta', callId: 'fake_edit_2', argsDelta: JSON.stringify(secondArgs) };
+    if (signal.aborted) return;
+    yield { type: 'tool_call_end', callId: 'fake_edit_2', name: 'studio.edit_script', args: secondArgs };
+    yield { type: 'finish', reason: 'tool_calls' };
+    return;
+  }
+
+  if (script === 'studio-edit') {
+    yield { type: 'text_delta', text: 'Đã cập nhật Combat.lua và Config.lua.' };
+    yield { type: 'finish', reason: 'stop' };
     return;
   }
 

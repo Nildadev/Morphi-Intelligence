@@ -4,6 +4,7 @@ import { ChevronDown, FileText, ShieldAlert, ShieldCheck, Wrench } from '../icon
 import type { DerivedApproval, DerivedToolCall } from '../../types';
 import { vi } from '../../i18n/vi';
 import { cn } from '../../utils';
+import { changesOfCall, type FileChange } from '../../lib/turnChanges';
 import { STUDIO_ICONS, TOOL_ICONS } from './toolIcons';
 
 /**
@@ -66,62 +67,20 @@ const formatValue = (value: unknown): string => {
 const isTruncated = (result: unknown): boolean =>
     typeof result === 'string' && result.length >= MAX_TOOL_OUTPUT_CHARS;
 
-type DiffOp = { kind: 'eq' | 'add' | 'del'; oldNo: number; newNo: number; text: string };
-
-/** Tiny line LCS for the diff viewer (capped; large files fall back to all-added). */
-export function diffLines(oldText: string, newText: string): { ops: DiffOp[]; added: number; removed: number } {
-    const oldLines = oldText.length ? oldText.split('\n') : [];
-    const newLines = newText.length ? newText.split('\n') : [];
-    if (oldLines.length > 2000 || newLines.length > 2000) {
-        return {
-            ops: newLines.map((text, index) => ({ kind: 'add' as const, oldNo: 0, newNo: index + 1, text })),
-            added: newLines.length,
-            removed: oldLines.length,
-        };
-    }
-    const dp: number[][] = Array.from({ length: oldLines.length + 1 }, () => new Array(newLines.length + 1).fill(0));
-    for (let i = oldLines.length - 1; i >= 0; i--) {
-        for (let j = newLines.length - 1; j >= 0; j--) {
-            dp[i][j] = oldLines[i] === newLines[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-        }
-    }
-    const ops: DiffOp[] = [];
-    let i = 0; let j = 0;
-    let added = 0; let removed = 0;
-    while (i < oldLines.length && j < newLines.length) {
-        if (oldLines[i] === newLines[j]) {
-            ops.push({ kind: 'eq', oldNo: i + 1, newNo: j + 1, text: oldLines[i] });
-            i++; j++;
-        } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-            ops.push({ kind: 'del', oldNo: i + 1, newNo: 0, text: oldLines[i] });
-            removed++; i++;
-        } else {
-            ops.push({ kind: 'add', oldNo: 0, newNo: j + 1, text: newLines[j] });
-            added++; j++;
-        }
-    }
-    while (i < oldLines.length) { ops.push({ kind: 'del', oldNo: i + 1, newNo: 0, text: oldLines[i] }); removed++; i++; }
-    while (j < newLines.length) { ops.push({ kind: 'add', oldNo: 0, newNo: j + 1, text: newLines[j] }); added++; j++; }
-    return { ops, added, removed };
-}
+/**
+ * The diff helpers live in `lib/turnChanges` so this card and the turn summary cannot drift:
+ * one LCS, one set of edit-tool names, one "last write wins" rule. `diffLines` is re-exported
+ * because existing tests import it from here.
+ */
+export { diffLines } from '../../lib/turnChanges';
 
 /** File-diff for edit-type Studio tools (deepseek workspace-changes shape). */
-function fileDiffOf(call: DerivedToolCall): { path: string; added: number; removed: number; ops: DiffOp[] } | null {
-    if (call.status !== 'done' && call.status !== 'error') return null;
-    const EDIT_TOOLS = new Set(['studio.multi_edit', 'studio.execute_luau', 'studio.write_script', 'studio.edit_script', 'studio.create_script']);
-    if (!EDIT_TOOLS.has(call.name)) return null;
-    const args = (call.args ?? {}) as Record<string, unknown>;
-    const pathValue = args.path ?? args.filename ?? args.script ?? args.target;
-    if (typeof pathValue !== 'string' || pathValue.trim() === '') return null;
-    const oldText = typeof args.old === 'string' ? args.old : typeof args.old_string === 'string' ? args.old_string : typeof args.oldText === 'string' ? args.oldText : typeof args.before === 'string' ? args.before : '';
-    const newRaw = args.source ?? args.code ?? args.script_content ?? args.content ?? args.new_string ?? args.newText;
-    const newText = typeof newRaw === 'string' ? newRaw : '';
-    if (newText === '' && oldText === '') return { path: pathValue, added: 0, removed: 0, ops: [] };
-    const { ops, added, removed } = diffLines(oldText, newText);
-    return { path: pathValue, added, removed, ops };
+function fileDiffOf(call: DerivedToolCall): FileChange | null {
+    const [first] = changesOfCall(call);
+    return first ?? null;
 }
 
-function DiffView({ diff }: { diff: { path: string; added: number; removed: number; ops: DiffOp[] } }) {
+function DiffView({ diff }: { diff: FileChange }) {
     return (
         <div className="overflow-hidden rounded-xl border border-border">
             <div className="flex items-center gap-2 border-b border-border bg-bg-inset px-3 py-2">

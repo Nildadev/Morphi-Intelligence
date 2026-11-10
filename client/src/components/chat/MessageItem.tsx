@@ -3,10 +3,12 @@ import { Check, ChevronRight, Copy, RefreshCw, RotateCcw } from '../icons';
 import type { DerivedMessage, TurnTimelineEntry } from '../../types';
 import { vi } from '../../i18n/vi';
 import { cn } from '../../utils';
+import { summarizeTurnChanges } from '../../lib/turnChanges';
 import { Markdown } from './Markdown';
 import { ToolCallCard } from './ToolCallCard';
 import { SubagentCard } from './SubagentCard';
 import { ThinkingBlock } from './ThinkingBlock';
+import { TurnWorkSummary } from './TurnWorkSummary';
 
 export interface MessageItemProps {
     message: DerivedMessage;
@@ -186,6 +188,9 @@ export function MessageItem({ message, toolProgress, isStreaming = false, onRege
     const activitySummary = isStreaming || workedLive || !allSettled
         ? (vi.chat.working ?? 'Đang làm việc…')
         : `${vi.chat.workedFor ?? 'Đã làm trong'} ${formatDuration(toolMs)}`;
+    // What the turn actually changed, not just how long it took. Computed from the same calls
+    // the activity block lists, so the two can never disagree about which tools ran.
+    const turnChanges = summarizeTurnChanges(activityCalls.map((step) => step.call));
 
     return (
         <article className="group flex w-full flex-col py-1.5">
@@ -205,6 +210,13 @@ export function MessageItem({ message, toolProgress, isStreaming = false, onRege
                         />
                     </button>
                     <div className="border-b border-border" />
+
+                    {/* Outcome row: the activity block above narrates the work, this states the
+                      * result. Only rendered when the turn actually wrote something — a turn that
+                      * only read files shows no "0 files changed" line. */}
+                    {turnChanges !== null ? (
+                        <TurnWorkSummary summary={turnChanges} live={isStreaming || workedLive || !allSettled} />
+                    ) : null}
 
                     {activityOpen ? (
                         <div className="mt-1.5 space-y-1.5">

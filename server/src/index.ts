@@ -132,6 +132,33 @@ if (fakeMode) {
     approval: 'ask',
     presentation: { label: 'E2E echo', risk: 'low' },
   });
+
+  // E2E-only `studio.edit_script`: the real Studio tool lives on the MCP surface and needs a
+  // connected place, so without this the turn-work summary ("N tệp thay đổi +A −D") could only
+  // be tested at the unit level. The NAME is the contract: the client's `turnChanges` module
+  // keys off `EDIT_TOOL_NAMES`, so a differently named fake would render no summary at all.
+  // `approval: 'auto'` keeps the demo one turn instead of two (no modal to dismiss).
+  harness.tools.register({
+    name: 'studio.edit_script',
+    description: 'E2E-only tool: pretend to rewrite a script and return its diff shape.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Script path' },
+        old: { type: 'string', description: 'Previous source' },
+        source: { type: 'string', description: 'New source' },
+      },
+      required: ['path', 'source'],
+      additionalProperties: false,
+    },
+    async execute(args: unknown): Promise<unknown> {
+      const record = (args ?? {}) as { path?: string; source?: string };
+      return { ok: true, path: record.path ?? '', bytes: (record.source ?? '').length };
+    },
+    isConcurrencySafe: true,
+    approval: 'auto',
+    presentation: { label: 'E2E edit script', risk: 'low' },
+  });
 }
 
 for (const setting of providerSettings.list()) {

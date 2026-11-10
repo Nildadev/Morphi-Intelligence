@@ -232,6 +232,14 @@ export const vi = {
         thinkingFor: 'Đã suy nghĩ trong',
         workedFor: 'Đã làm trong',
         working: 'Đang làm việc…',
+        // Tổng kết thay đổi của một lượt (kiểu ZCode "N files changed +A −D"). Tiếng Việt không
+        // biến đổi hình thái theo số nên một mẫu dùng cho mọi N; `filesChangedOne` chỉ để câu
+        // đọc tự nhiên ở N=1.
+        filesChangedOne: '1 tệp thay đổi',
+        filesChangedMany: '{count} tệp thay đổi',
+        filesChangedLabel: 'Các tệp đã thay đổi trong lượt này',
+        linesAdded: 'dòng thêm',
+        linesRemoved: 'dòng bớt',
         thinkingActive: 'Đang suy nghĩ…',
         completedIn: 'Hoàn tất trong',
         // M6: nhãn cho khoảng trống giữa "đã gửi" và "chunk đầu tiên". Không nói "đang suy nghĩ" vì
