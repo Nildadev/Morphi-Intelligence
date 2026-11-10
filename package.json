@@ -1,15 +1,29 @@
 {
   "name": "morphi-intelligence",
-  "version": "1.0.5-release-beta",
+  "version": "1.1.0",
   "description": "Roblox Studio AI Orchestrator",
   "main": "main.js",
   "author": "Phuc",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
+  "packageManager": "npm@10",
   "scripts": {
     "build:client": "cd client && npm run build",
     "build:server": "cd server && npm run build",
     "build": "npm run build:client && npm run build:server",
+    "postinstall": "node scripts/sqlite-abi.mjs cache",
+    "prestart": "node scripts/sqlite-abi.mjs electron",
     "start": "electron .",
+    "predev": "node scripts/sqlite-abi.mjs node",
+    "test": "npm run test:server && npm run test:client",
+    "test:server": "npm --prefix server test",
+    "test:client": "npm --prefix client test",
+    "test:main": "node --test main/backend.test.js main/credentials.test.js",
+    "e2e": "npm --prefix client run e2e",
+    "typecheck": "npm --prefix server run typecheck && npm --prefix client run build",
     "dist": "npm run build && electron-builder",
+    "predist": "node scripts/sqlite-abi.mjs electron",
     "dev": "concurrently \"npm run dev --prefix server\" \"npm run dev --prefix client\""
   },
   "build": {
@@ -21,6 +35,9 @@
     },
     "files": [
       "main.js",
+      "preload.js",
+      "main/**/*.js",
+      "!main/**/*.test.js",
       "logo.png",
       "package.json",
       "server/dist/**/*",
@@ -42,13 +59,12 @@
     "electron-is-dev": "^2.0.0"
   },
   "dependencies": {
-    "@google-cloud/vertexai": "^1.10.0",
-    "@google/generative-ai": "^0.24.1",
     "@modelcontextprotocol/sdk": "^1.26.0",
-    "better-sqlite3": "^12.6.2",
-    "cors": "^2.8.6",
+    "better-sqlite3": "^12.11.1",
     "dotenv": "^17.2.4",
-    "express": "^5.2.1",
-    "openai": "^6.18.0"
+    "express": "^5.2.1"
+  },
+  "allowScripts": {
+    "electron@31.7.7": true
   }
 }

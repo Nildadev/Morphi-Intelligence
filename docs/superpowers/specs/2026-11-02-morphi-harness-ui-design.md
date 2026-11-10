@@ -15,7 +15,7 @@ Morphi Intelligence hiện là Electron app gồm:
 - React 19 + Vite + Tailwind 4 cho giao diện chat.
 - SQLite (`better-sqlite3`) lưu project/session/message.
 - Provider OpenAI, Gemini, OpenRouter, ProxyPal; stream SSE; vòng lặp tool call tối đa 10 vòng.
-- Roblox Studio MCP chạy qua `npx -y robloxstudio-mcp@latest`.
+- Roblox Studio MCP hiện chạy qua `npx -y robloxstudio-mcp@latest` (package bên thứ ba `boshyxd/robloxstudio-mcp`); 1.1.0 chuyển sang **MCP server chính thức của Roblox** (xem §4.11).
 
 Các vấn đề chính đã xác định:
 
@@ -77,7 +77,7 @@ Các mục trên có thể là phiên bản sau nhưng kiến trúc seam phải 
 | Credential | Electron main sở hữu `safeStorage`; renderer ↔ main qua IPC; server nhận key qua `parentPort` |
 | Server | Chạy trong `utilityProcess` riêng, bind `127.0.0.1`, port động |
 | API | UI gọi relative `/api`; token do preload cấp, gửi qua header mỗi request |
-| MCP | Pin và bundle `robloxstudio-mcp`; spawn bằng Node của Electron |
+| MCP | Chỉ dùng MCP server chính thức của Roblox (§4.11); bỏ package bên thứ ba, bỏ pin và bundle `robloxstudio-mcp` |
 | Binary rác | Xoá `Morphi.exe` (đã được duyệt) |
 | Build log | Xoá `build_log.txt`, `build_log_final.txt` (đã được duyệt) |
 | Version | `1.1.0` cho root/client/server |
@@ -97,7 +97,7 @@ Electron main
   │    ├─ Express (127.0.0.1, port 0 → báo port về main)
   │    ├─ harness runtime
   │    ├─ SQLite (%APPDATA%/MorphiIntelligence/morphi.db)
-  │    └─ MCP child process (robloxstudio-mcp pinned)
+  │    └─ MCP child process (Roblox Studio MCP chính thức, §4.11)
   └─ BrowserWindow → http://127.0.0.1:<port>
 ```
 
@@ -316,7 +316,7 @@ idle → turn/start → [step/start → assistant stream → tool calls → step
 
 - Mỗi step: một model request + tối đa một batch tool call.
 - Turn: tối đa 24 steps; mỗi step tối đa 8 tool calls; parallel pool 4.
-- Retry provider: tối đa 3 lần cho 429/5xx/timeout, backoff 500ms → 1.5s → 4s; không retry 4xx.
+- Retry provider: tối đa 10 lần cho 429/5xx/timeout, backoff 500ms → 1s → 2s → 4s → 8s → 16s → 30s (giữ nguyên 30s cho 4 lần cuối); không retry 4xx.
 - Cancellation:
   - `AbortController` từ HTTP request, endpoint `/api/chat/cancel`, hoặc Stop button.
   - Provider stream dừng ngay; tool đang chạy nhận signal; tool chưa chạy ghi `cancelled`.
@@ -402,6 +402,65 @@ interface HarnessContext {
 - **Skills:** file Markdown có frontmatter (`name`, `description`, `triggers`), load từ bundle và `%APPDATA%/MorphiIntelligence/skills`; kích hoạt bằng trigger hoặc lệnh `/skill`; chèn section vào prompt; trạng thái active ghi bằng event `session/skills`. Built-in 1.1.0: `roblox-luau-style`, `roblox-debug`.
 - **Goals:** một goal active/session; trạng thái `active`/`done`/`blocked`; agent tiếp tục turn cho đến khi done/blocked hoặc tối đa 12 turn; UI goal bar.
 - **Workflows:** built-in `roblox-feature` và `roblox-debug`, mỗi workflow gồm các phase cố định; phase có prompt/tool subset; phát `workflow/*` events; UI timeline.
+
+### 4.11 Roblox Studio MCP (chính thức)
+
+1.1.0 chỉ tích hợp **MCP server chính thức của Roblox**. Không dùng, không pin, không bundle package bên thứ ba (`robloxstudio-mcp` của `boshyxd`), và không spawn bằng `npx`/`ELECTRON_RUN_AS_NODE`.
+
+Hai hình thái chính thức, đều transport `stdio`:
+
+| Hình thái | Windows | macOS |
+|---|---|---|
+| Built-in trong Roblox Studio (khuyến nghị; bật qua **Assistant › Manage MCP Servers**, không cần cài plugin) | `cmd.exe /c %LOCALAPPDATA%\Roblox\mcp.bat` | `/Applications/RobloxStudio.app/Contents/MacOS/StudioMCP` |
+| Binary tham chiếu chính thức `Roblox/studio-rust-mcp-server` | `rbx-studio-mcp.exe --stdio` | `macOS-rbx-studio-mcp.zip` → `--stdio` |
+
+- `resolveOfficialMcpServer(overrides, env)` trả `{ command, args, source, path }` theo chuỗi resolve **đã đo thật
+  trên máy ngày 2026-11-03** (xem Ruling M3 trong plan): (1) đường dẫn người dùng nhập ở Settings › MCP, đã validate;
+  (2) `%LOCALAPPDATA%\Roblox\mcp.bat`; (3) `%LOCALAPPDATA%\Roblox\Versions\version-*\StudioMCP.exe` (mtime cao nhất);
+  (4) fallback registry `HKCU\Software\Roblox\RobloxStudio\ContentFolder` → `<ContentFolder>\..\StudioMCP.exe`
+  (đây chính là fallback `mcp.bat` dùng); (5) binary `rbx-studio-mcp` chính thức; (6) `null`.
+  Lý do phải có (3)–(4): `mcp.bat` **hardcode** thư mục version hiện tại (`version-<hash>`) nên nó vỡ khi Studio
+  OTA-update; nội dung `.bat` là dữ liệu, không bao giờ được nối thành command string.
+- `source` (`"settings" | "studio-builtin" | "studio-binary" | "none"`) hiển thị ở MCP tab và `GET /api/mcp/status`
+  để người dùng biết đang chạy hình thái nào; kèm `path` đã resolve và `version` đọc từ `serverInfo` của `initialize`.
+- Server con spawn bằng `child_process.spawn` với stdio pipe; log stderr qua `redact`; không ghi đường dẫn tuyệt đối
+  vào event payload, chỉ ghi `source`. **Thư mục `%LOCALAPPDATA%\Roblox\StudioMCP\` chứa `auth.token` của Studio:
+  nghiêm cấm đọc, ghi log, copy hoặc đưa vào payload chuẩn đoán** (đã xác nhận tồn tại khi đo; Morphi không cần nó).
+- **Hợp đồng đo thật của server (thay cho danh sách tool từng đoán trong bản trước):** `serverInfo`
+  `{name:"RobloxStudio", version:"1.0.0"}`, `protocolVersion 2024-11-05`, capabilities `{tools:{listChanged:true}}`,
+  `resources: []`, `prompts: []`, instructions `Studio MCP Proxy - bridges MCP clients with Roblox Studio`.
+  **34 tool**, `studio_id` bắt buộc trên **33/34** (chỉ `list_roblox_studios` không cần). Danh sách thật:
+  `list_roblox_studios`, `get_studio_state`, `get_console_output`, `start_stop_play`, `execute_luau`, `multi_edit`,
+  `script_read`, `script_search`, `script_grep`, `search_game_tree`, `inspect_instance`, `insert_asset`,
+  `search_asset`, `upload_image`, `store_image`, `screen_capture`, `http_get`, `character_navigation`,
+  `user_mouse_input`, `user_keyboard_input`, `auto_setup_avatar`, `generate_scene`, `generate_mesh`,
+  `generate_procedural_model`, `generate_texture`, `generate_material`, `generate_avatar`, `segment_mesh`,
+  `wait_job_finished`, `skill`, `list_skills`, `create_skill`, `edit_skill`, `subagent`.
+  Các tên `run_code`, `get_studio_mode`, `insert_model`, `run_script_in_play_mode` **không tồn tại** — bản spec trước
+  ghi sai do chưa đo.
+- **Tên tool publish trong Morphi là `studio.<toolName>`**, không giữ nguyên, vì server thật có `skill`,
+  `subagent`, `create_skill`, `edit_skill`, `list_skills`, `http_get` sẽ **đụng** built-in của §4.7 (skills) và
+  §4.10 (subagents); registry keyed-by-name sẽ ghi đè ngầm. `presentation.label` và approval vẫn hiển thị nhãn tiếng Việt.
+- **Không phân loại rủi ro theo tiền tố tên tool.** Đo thật cho thấy `execute_luau` thực thi Luau tùy ý trên main
+  thread của Studio trong khi `get_console_output` chỉ đọc log, nên tiền tố `get_`/`list_`/`read_` không phải tín hiệu
+  an toàn. Nhóm đọc (`list_roblox_studios`, `get_studio_state`, `get_console_output`, `inspect_instance`,
+  `search_game_tree`, `script_read`, `script_search`, `script_grep`, `search_asset`, `skill`, `list_skills`,
+  `http_get`) → `auto`; nhóm biến đổi place (`multi_edit`, `execute_luau`, `insert_asset`, `start_stop_play`,
+  `character_navigation`, `user_mouse_input`, `user_keyboard_input`, `auto_setup_avatar`) → `ask`; nhóm công bố/bupload
+  hoặc tốn tài nguyên (`upload_image`, `store_image`, `generate_*`, `segment_mesh`, `create_skill`, `edit_skill`) → `ask`.
+  Một contract test assert ánh xạ 1:1 với `tools/list` để tool mới từ upstream **fail test**, không rơi về `auto`.
+- `studio_id` do **Morphi inject**, không bắt model đoán: schema quảng cáo cho LLM bỏ `studio_id` khỏi `required`,
+  gateway bơm id đã resolve ngay trước `callTool`. Bỏ qua `studio_id` vẫn chạy khi chỉ có một Studio;
+  `studio_id: ""` fail với `-32603 "Client proxy is out of date, restart to update"`.
+- Vì `listChanged: true`, Morphi phải subscribe `notifications/tools/list_changed` và gọi `syncTools()`; ảnh snapshot
+  một lần lúc boot là defect. Tool output có thể rất lớn (`tools/list` đã 72,637 ký tự; `search_asset` schema 7,411)
+  nên khi cắt theo `MAX_TOOL_OUTPUT_CHARS` phải **ghi marker kèm độ dài gốc**, không cắt im lặng.
+  `screen_capture` trả **image content block**, pipeline phải giữ ảnh chứ không flatten thành text.
+- Nhóm `generate_*`/`segment_mesh`/`auto_setup_avatar` hỗ trợ `async` và hoàn tất qua `wait_job_finished(jobId,…)`;
+  timeout each tool phải theo `ToolDefinition.timeoutMs` chứ không dùng một giá trị cứng cho mọi call.
+- `studioLinked` nghĩa là server MCP báo có một instance Roblox Studio đang chạy; không có Studio → UI hiện chip
+  “Mất kết nối” kèm hướng dẫn bật trong Studio, app vẫn chạy bình thường.
+- Không phát hiện được server nào → `connected: false`, `source: null`, thông báo tiếng Việt chỉ rõ cách bật; không fallback sang package bên thứ ba.
 
 ---
 
@@ -525,7 +584,7 @@ SSE envelope:
 - Layout ChatGPT: nav trái (Chung, Nhà cung cấp, MCP, Bộ nhớ, Nâng cao), panel phải.
 - Provider card: logo, trạng thái `Đã cấu hình / Chưa cấu hình / Lỗi`, input key (masked), base URL cho custom connector, nút Lưu/Xoá. Key gửi qua IPC `morphi:credentials:set`/`delete`; base URL qua `PUT /api/providers/:id/config`.
 - Không hiển thị key đã lưu; chỉ hiện `••••••••` + trạng thái; key không bao giờ đi qua HTTP.
-- MCP tab: trạng thái, đường dẫn package, version, nút reconnect, log gần nhất.
+- MCP tab: trạng thái, nguồn server (`studio-builtin` / `studio-binary` / `settings`), đường dẫn thực thi, version, nút reconnect, log gần nhất, và hướng dẫn bật MCP trong Roblox Studio (Assistant › Manage MCP Servers) khi chưa kết nối.
 - Memory tab: stats, clear data với ConfirmModal.
 - Advanced: model auto priority, title model, compaction thresholds (read-only trong 1.1.0).
 
@@ -538,6 +597,29 @@ SSE envelope:
 - Motion 150–200ms; tôn trọng `prefers-reduced-motion`.
 - Focus ring 2px accent; contrast AA.
 - Scrollbar mảnh, hover-only ở sidebar.
+
+#### 6.6.1 Tương phản chữ (bắt buộc)
+
+Người dùng phản ánh “chữ có màu khó nhìn”, nên các quy định sau là ràng buộc, không phải gợi ý:
+
+- Text thật sự nhìn thấy được phải đạt **≥ 4.5:1** với nền (≥ 3:1 chỉ chấp nhận cho chữ ≥ 24px hoặc icon); check cả light lẫn dark.
+- **Cấm modifier opacity trên text** (`text-*/20`, `/30`, `/40`, `/50`, `/60`, `opacity-*` trên nhãn). Muốn nhạt hơn thì dùng token màu riêng, không dùng opacity.
+- Mỗi mode khai báo đủ 3 mức text: `--color-text-primary`, `--color-text-secondary` (nhãn phụ, ≥ 4.5:1), `--color-text-tertiary` (meta, footnote, vẫn ≥ 4.5:1). Không có mức “mờ trang trí”.
+- `placeholder` dùng `--color-text-tertiary`, không under-token.
+- Brand `#10a37f` **không** dùng làm màu chữ nhỏ trên nền trắng (chỉ 3.17:1). Chữ accent dùng `--color-brand-text` (`#0b7d61` light / `#34d399` dark, ≥ 4.5:1); nền accent + chữ trắng chỉ dùng cho control ≥ 16px và đạt 4.5:1.
+- Trạng thái (thành công/cảnh báo/lỗi) dùng token `--color-{success,warning,danger}-text` per mode (light `*-700`, dark `*-400`) trên nền tint `*-500/10`; cấm `text-green-500`/`amber-400`/`red-300` hardcode trên nền pastel.
+- Hiệu ứng shimmer/gradient text chỉ được dùng khi `currentColor` vẫn đạt tương phản ở cả hai mode; không gradient trắng trên nền trắng.
+- Không dưới 11px cho text thật; icon-only thì phải có tooltip/aria-label.
+- Inline code trong `.prose`: không `opacity`; dùng `--color-text-primary` trên nền `--color-bg-inset`.
+
+#### 6.6.2 Không “vibe-coded”
+
+- Một palette duy nhất: trung tính (nền/border/text) + 1 accent + 4 token trạng thái. Không cầu vồng, không gradient trang trí, không glassmorphism, không shadow tím/xanh.
+- Một thang radius (8/12/16/24) và một thang spacing (4/8/12/16/24); mọi giá trị lẻ (`text-[13px]`, `p-[7px]`) phải được đổi thành token.
+- Khoảng cách, alignment và cỡ chữ đồng nhất giữa các panel; không bo góc lệch giữa button và container chứa nó.
+- Icon cùng một bộ (lucide), cùng strokeWidth; không trộn emoji làm icon chức năng.
+- Không số liệu/label giả, không “Coming soon”, không nút đi vào chỗ chết; tính năng chưa có thì ẩn hẳn.
+- Copy tiếng Việt tự nhiên, cộc lốc kiểu UI thật; không Title Case máy móc, không dấu thăng hoa kiểu marketing.
 
 ### 6.7 i18n & accessibility
 
@@ -586,7 +668,7 @@ SSE envelope:
 - CSP: `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; object-src 'none'; base-uri 'none'`.
 - Approval cho tool nguy hiểm; mặc định deny; audit event.
 - safeStorage cho key; log redaction; không log args nhạy cảm.
-- Pin `robloxstudio-mcp@2.6.0`; bundle package; spawn bằng Electron Node (`ELECTRON_RUN_AS_NODE=1`), fallback `npx` với thông báo lỗi rõ.
+- Chỉ kết nối MCP server chính thức của Roblox (§4.11): built-in Studio hoặc binary `rbx-studio-mcp`; đường dẫn resolution luôn validate bằng allowlist (khớp prefix `%LOCALAPPDATA%\Roblox\`, `/Applications/RobloxStudio.app/`, hoặc chính xác là `cmd.exe`) trước khi spawn; không nhận chuỗi lệnh tự do từ renderer.
 - Electron: `contextIsolation: true`, `nodeIntegration: false`, `sandbox: true` nếu tương thích; chặn `will-navigate`, mở link ngoài qua shell với allowlist.
 - Single-instance lock; health check timeout 15s; dialog lỗi thay vì cửa sổ trắng.
 - Validate input bằng zod; body limit 2MB (không cần 50MB).
@@ -644,7 +726,7 @@ SSE envelope:
 ### 10.4 Manual
 
 - `npm run build`, `npm test`, `npm run e2e`, `npm run dist`.
-- Chạy portable trên Windows sạch, không cài Node; xác nhận MCP bundle hoạt động.
+- Chạy portable trên Windows sạch, không cài Node; xác nhận app tự phát hiện và kết nối MCP Studio chính thức khi Studio đang bật.
 - Kiểm tra không còn key plaintext, không còn localhost hardcode, không còn file rác.
 
 ---
@@ -703,8 +785,8 @@ SSE envelope:
 7. Không còn key plaintext; API từ chối request thiếu token/origin sai.
 8. Không còn `http://localhost:3000` hardcode; UI gọi relative `/api`.
 9. Model picker chỉ hiển thị model dùng được; provider chưa cấu hình hiện CTA trong Settings.
-10. MCP bundle chạy trên máy sạch không có Node; reconnect hoạt động.
-11. UI đạt layout ChatGPT desktop đã chốt, tiếng Việt, light/dark, không lỗi console.
+10. App chạy được không cần Node cài sẵn và không còn dependency MCP bên thứ ba; MCP Studio chính thức được phát hiện theo §4.11, reconnect hoạt động, và khi chưa bật Studio thì UI hiển thị hướng dẫn rõ ràng.
+11. UI đạt layout ChatGPT desktop đã chốt, tiếng Việt, light/dark, không lỗi console; mọi text đạt ≥ 4.5:1 ở cả hai mode theo §6.6.1, không còn opacity trên text và không còn màu trạng thái hardcode.
 12. Không còn file rác/dead code đã liệt kê; LICENSE, `.env.example`, README, CI đầy đủ.
 13. Version root/client/server = `1.1.0`.
 14. Portable build khởi động, chat, tool call, approval, stop, reload đều hoạt động.
@@ -718,7 +800,7 @@ SSE envelope:
 |---|---|
 | Harness full quá lớn, dễ trễ | Phase hóa; mỗi phase shippable; test trước khi chuyển phase |
 | Event-sourced refactor gây regression UI | Fake LLM + replay tests; giữ API contract rõ |
-| MCP package thay đổi/hỏng | Pin 2.6.0, bundle, MCP stub test, reconnect + log |
+| MCP package thay đổi/hỏng | Dùng server chính thức của Roblox; resolve nhiều nguồn + `source` trong status; MCP stub test; reconnect + log; không pin package bên thứ ba |
 | Electron safeStorage không khả dụng | Fallback session-only; hiển thị cảnh báo, không ghi plaintext |
 | Approval làm chậm workflow | `ask-once` theo phiên; tool đọc auto |
 | Subagent/workflow tốn token | Giới hạn depth/concurrency/steps; hiển thị usage |

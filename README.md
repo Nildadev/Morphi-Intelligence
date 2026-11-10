@@ -52,9 +52,11 @@ Morphi is a powerful, AI-driven assistant designed specifically for Roblox devel
    Create a `.env` file in the `server` directory and add your API keys:
    ```env
    OPENAI_API_KEY=your_key_here
-   GOOGLE_API_KEY=your_key_here
-   PROXYPAL_API_KEY=your_key_here
+   GEMINI_API_KEY=your_key_here
+   OPENROUTER_API_KEY=your_key_here
+   # Optional: DEEPSEEK_API_KEY, GROQ_API_KEY, MISTRAL_API_KEY, XAI_API_KEY, CEREBRAS_API_KEY, TOGETHER_API_KEY
    ```
+   In the packaged app, keys are entered in Settings and stored in the OS keyring instead.
 
 4. **Build & Start**:
    ```bash
@@ -79,7 +81,7 @@ This project is licensed under the [ISC License](LICENSE).
 
 ## 🙏 Acknowledgments
 
-- **[robloxstudio-mcp](https://github.com/boshyxd/robloxstudio-mcp)** by **[boshyxd](https://github.com/boshyxd)**: The core MCP server implementation that enables Morphi to interact with Roblox Studio.
+- **Roblox Studio MCP**: Morphi talks only to the official MCP server shipped inside Roblox Studio (or the official `rbx-studio-mcp` binary). No third-party bridge, no `npx`, no npm-pinned MCP server.
 
 ---
 *Created by **Nildadev** | Morphi Intelligence*

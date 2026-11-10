@@ -30,6 +30,16 @@ server/db/morphi.db
 server/db/morphi.db-journal
 *.sqlite
 *.db
+*.db-wal
+*.db-shm
+*.v1.bak
+
+# Test artifacts
+playwright-report/
+test-results/
+
+# Native binding cache (one better-sqlite3 binary per Node/Electron ABI)
+server/.native/
 
 # IDEs
 .vscode/
@@ -39,10 +49,22 @@ server/db/morphi.db-journal
 
 # Temporary files
 /tmp/
+.tmp/
 .temp/
 
 # Logs
 logs/
 *.log
+build_log*
+
+# Local dev debris — agent dispatch docs, one-off diagnostics, vendored toolchain, caches
+opencode-task-*.md
+diag-db.js
+.superpowers/
+.workbuddy-ai/
+.node26/
+client/.vitest/
+server/better-sqlite3-*.tgz
+
 tsc_errors.txt
 tsc_errors_utf8.txt
