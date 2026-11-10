@@ -219,6 +219,7 @@ export const en: Record<string, unknown> = {
     filesChangedOne: '1 file changed',
     filesChangedMany: '{count} files changed',
     filesChangedLabel: 'Files changed in this turn',
+    diffEmpty: 'Nothing to diff.',
     linesAdded: 'lines added',
     linesRemoved: 'lines removed',
     thinkingActive: 'Thinking…',

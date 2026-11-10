@@ -339,7 +339,12 @@ export function Composer({
 
     /** A palette row was chosen: commands run immediately (text cleared), skills are inserted.
      *  Parameterised commands (goal/subagent/workflow) keep the typed text as their argument and
-     *  run on Enter via ChatInterface's handleSend dispatch. */
+     *  run on Enter via ChatInterface's handleSend dispatch.
+     *
+     *  A skill is inserted as its SLASH TRIGGER, not its catalogue name: the server matches skills
+     *  by substring against `triggers` (`/brainstorm`), and `morphi-brainstorm` is the file name —
+     *  inserting it produced text that matched no trigger, and the user's typed slash was gone.
+     *  Falls back to the name only if a skill declares no slash trigger at all. */
     const handleSlashSelect = (item: SlashItem) => {
         if (item.kind === 'command') {
             if (SLASH_ARG_COMMANDS.includes(item.id)) {
@@ -352,7 +357,9 @@ export function Composer({
                 onRunCommand(item.id);
             }
         } else {
-            setText(`${item.id} `);
+            const skill = skills.find((entry) => entry.name === item.id);
+            const trigger = skill?.triggers.find((entry) => entry.startsWith('/'));
+            setText(`${trigger ?? item.id} `);
         }
         setSlashDismissed(true);
         setSlashActiveIndex(0);
@@ -435,14 +442,20 @@ export function Composer({
                 description: slashCommandDescription(command.id),
                 icon: command.icon,
             }));
+        // A skill row advertises its SLASH TRIGGER (`/brainstorm`), because that is the string the
+        // user types and the server matches. The catalogue name (`morphi-brainstorm`) stays in the
+        // row id but never in the label: showing it made the palette look like it inserted text
+        // that could not possibly trigger the skill. Filtering accepts either form.
         const skillItems: SlashItem[] = skills
-            .filter((skill) => skill.name.toLowerCase().includes(query))
-            .map((skill) => ({
+            .map((skill) => ({ skill, trigger: skill.triggers.find((entry) => entry.startsWith('/')) }))
+            .filter(({ skill, trigger }) => skill.name.toLowerCase().includes(query)
+                || (trigger ?? '').toLowerCase().replace(/^\//, '').includes(query))
+            .map(({ skill, trigger }) => ({
                 key: `skill:${skill.name}`,
                 kind: 'skill',
                 section: 'skills',
                 id: skill.name,
-                label: skill.name,
+                label: trigger ?? skill.name,
                 description: skill.description,
                 icon: Sparkles,
             }));

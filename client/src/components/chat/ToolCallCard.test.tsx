@@ -93,4 +93,50 @@ describe('ToolCallCard', () => {
         expect(screen.getByText('Yêu cầu phê duyệt')).toBeInTheDocument();
         expect(screen.getByText('Đã cho phép')).toBeInTheDocument();
     });
+
+    describe('edit calls render as the file change, not as a parameter dump', () => {
+        const editCall = (over: Partial<DerivedToolCall> = {}) => call({
+            name: 'studio.edit_script',
+            args: {
+                path: 'src/ReplicatedStorage/Config.lua',
+                old: 'return {}\n',
+                source: 'return {\n  speed = 16,\n  jump = 50,\n}\n',
+            },
+            result: { ok: true },
+            ...over,
+        });
+
+        it('shows the path and the churn in the header, always visible (no click needed)', () => {
+            render(<ToolCallCard call={editCall()} />);
+
+            expect(screen.getByText('src/ReplicatedStorage/Config.lua')).toBeInTheDocument();
+            expect(screen.getByText('+4')).toBeInTheDocument();
+            expect(screen.getByText('−1')).toBeInTheDocument();
+        });
+
+        it('shows the diff rows themselves — the added lines are readable without expanding', () => {
+            render(<ToolCallCard call={editCall()} />);
+
+            expect(screen.getByText('speed = 16,')).toBeInTheDocument();
+            expect(screen.getByText('jump = 50,')).toBeInTheDocument();
+        });
+
+        it('does NOT dump the tool arguments — the diff is the payload', () => {
+            render(<ToolCallCard call={editCall()} />);
+
+            // The old card printed an args JSON block; the source text appearing as a raw blob is
+            // exactly what this change removes. `path` may appear in the header, never as a label.
+            expect(screen.queryByText('Tham số')).toBeNull();
+            expect(screen.queryByText('Kết quả')).toBeNull();
+            expect(screen.queryByText(/"old":/)).toBeNull();
+        });
+
+        it('keeps the non-edit tools on the compact card with args and result', () => {
+            // The change is scoped: a read call still needs its parameters to be inspectable.
+            render(<ToolCallCard call={call()} />);
+            fireEvent.click(screen.getByRole('button'));
+            expect(screen.getByText('Tham số')).toBeInTheDocument();
+            expect(screen.getByText('Kết quả')).toBeInTheDocument();
+        });
+    });
 });

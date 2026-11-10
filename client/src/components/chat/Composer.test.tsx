@@ -580,6 +580,59 @@ describe('Composer', () => {
         expect(slashPalette()).toBeNull();
     });
 
+    it('inserts a skill SLASH TRIGGER, not its catalogue name, when the skill declares one', () => {
+        // The bug: choosing the row wiped the user's "/" and inserted `morphi-brainstorm`, which the
+        // server never matches — skills are matched by substring against `triggers` (`/brainstorm`).
+        // The draft must come back as the trigger so Enter actually activates the skill.
+        const onSend = vi.fn(() => true);
+        const withTrigger: SkillMeta[] = [{
+            name: 'morphi-brainstorm',
+            description: 'Làm rõ ý định trước khi viết Luau',
+            triggers: ['/brainstorm', 'ý tưởng', 'tính năng mới'],
+            source: 'builtin',
+            active: true,
+        }];
+        render(<Composer {...baseProps} skills={withTrigger} onSend={onSend} />);
+        fireEvent.change(textarea(), { target: { value: '/brain' } });
+
+        fireEvent.click(screen.getByRole('option', { name: /\/brainstorm/ }));
+
+        expect(textarea()).toHaveValue('/brainstorm ');
+        expect(onSend).not.toHaveBeenCalled();
+    });
+
+    it('labels a skill row with its trigger so the palette shows what to type', () => {
+        const withTrigger: SkillMeta[] = [{
+            name: 'morphi-brainstorm',
+            description: 'Làm rõ ý định trước khi viết Luau',
+            triggers: ['/brainstorm'],
+            source: 'builtin',
+            active: true,
+        }];
+        render(<Composer {...baseProps} skills={withTrigger} />);
+        fireEvent.change(textarea(), { target: { value: '/' } });
+
+        // The row is found by the trigger the user will type, not by the file name.
+        expect(screen.getByRole('option', { name: /\/brainstorm/ })).toBeInTheDocument();
+    });
+
+    it('finds a skill by either its trigger or its catalogue name', () => {
+        const withTrigger: SkillMeta[] = [{
+            name: 'morphi-brainstorm',
+            description: 'Làm rõ ý định trước khi viết Luau',
+            triggers: ['/brainstorm'],
+            source: 'builtin',
+            active: true,
+        }];
+        render(<Composer {...baseProps} skills={withTrigger} />);
+
+        fireEvent.change(textarea(), { target: { value: '/brain' } });
+        expect(screen.getByRole('option', { name: /\/brainstorm/ })).toBeInTheDocument();
+
+        fireEvent.change(textarea(), { target: { value: '/morphi' } });
+        expect(screen.getByRole('option', { name: /\/brainstorm/ })).toBeInTheDocument();
+    });
+
     it('highlights the first visible skill before any command', () => {
         render(<Composer {...baseProps} skills={SKILLS} />);
         fireEvent.change(textarea(), { target: { value: '/' } });

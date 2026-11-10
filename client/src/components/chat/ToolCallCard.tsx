@@ -80,34 +80,40 @@ function fileDiffOf(call: DerivedToolCall): FileChange | null {
     return first ?? null;
 }
 
-function DiffView({ diff }: { diff: FileChange }) {
+/**
+ * Diff body of an edit card — the hunk rows only. The path, churn and status live in the card's
+ * header (see `ToolCallCard`), so this is not a card of its own.
+ *
+ * Line numbers are the two gutter columns the reference design shows: old on the left, new on the
+ * right, blank on the side a line does not exist on. `select-none` keeps them out of a copy.
+ */
+function DiffBody({ diff }: { diff: FileChange }) {
     return (
-        <div className="overflow-hidden rounded-xl border border-border">
-            <div className="flex items-center gap-2 border-b border-border bg-bg-inset px-3 py-2">
-                <FileText size={14} aria-hidden="true" className="shrink-0 text-text-secondary" />
-                <span className="min-w-0 flex-1 truncate font-mono text-[13px] text-text-primary">{diff.path}</span>
-                <span className="shrink-0 font-mono text-[13px] font-semibold text-success-text">+{diff.added}</span>
-                <span className="shrink-0 font-mono text-[13px] font-semibold text-danger-text">-{diff.removed}</span>
-                <ChevronDown size={14} aria-hidden="true" className="shrink-0 text-text-tertiary" />
-            </div>
-            <div className="max-h-80 overflow-auto font-mono text-[12px] leading-5">
-                {diff.ops.length === 0 ? (
-                    <p className="px-3 py-2 text-text-tertiary">Không có nội dung để diff.</p>
-                ) : (
-                    diff.ops.map((op, index) => {
-                        const prefix = op.kind === 'add' ? '+' : op.kind === 'del' ? '-' : ' ';
-                        const rowClass = op.kind === 'add' ? 'bg-success-bg/40 text-text-primary' : op.kind === 'del' ? 'bg-danger-bg/40 text-text-primary' : 'text-text-secondary';
-                        return (
-                            <div key={index} className={cn('flex', rowClass)}>
-                                <span className="w-10 shrink-0 select-none pr-2 text-right text-text-tertiary">{op.kind === 'del' || op.kind === 'eq' ? op.oldNo || '' : ''}</span>
-                                <span className="w-10 shrink-0 select-none pr-2 text-right text-text-tertiary">{op.kind === 'add' || op.kind === 'eq' ? op.newNo || '' : ''}</span>
-                                <span className="w-4 shrink-0 select-none">{prefix}</span>
-                                <span className="whitespace-pre-wrap break-all">{op.text}</span>
-                            </div>
-                        );
-                    })
-                )}
-            </div>
+        <div className="max-h-80 overflow-auto font-mono text-[12px] leading-5">
+            {diff.ops.length === 0 ? (
+                <p className="px-3 py-2 text-text-tertiary">{vi.chat.diffEmpty}</p>
+            ) : (
+                diff.ops.map((op, index) => {
+                    const prefix = op.kind === 'add' ? '+' : op.kind === 'del' ? '-' : ' ';
+                    const rowClass = op.kind === 'add'
+                        ? 'bg-success-bg text-text-primary'
+                        : op.kind === 'del'
+                            ? 'bg-danger-bg text-text-primary'
+                            : 'text-text-secondary';
+                    return (
+                        <div key={index} className={cn('flex', rowClass)}>
+                            <span className="w-10 shrink-0 select-none pr-2 text-right text-text-tertiary">
+                                {op.kind === 'del' || op.kind === 'eq' ? op.oldNo || '' : ''}
+                            </span>
+                            <span className="w-10 shrink-0 select-none pr-2 text-right text-text-tertiary">
+                                {op.kind === 'add' || op.kind === 'eq' ? op.newNo || '' : ''}
+                            </span>
+                            <span className="w-4 shrink-0 select-none">{prefix}</span>
+                            <span className="whitespace-pre-wrap break-all">{op.text}</span>
+                        </div>
+                    );
+                })
+            )}
         </div>
     );
 }
@@ -218,6 +224,34 @@ export function ToolCallCard({ call, approval, progress }: ToolCallCardProps) {
     const liveProgress = call.status === 'running' ? progress : undefined;
     const diff = fileDiffOf(call);
 
+    // An edit call is a FILE CHANGE, so it renders as the change itself: header row with the path
+    // and +A −D, body with the diff. The generic card (args JSON + result JSON) is the wrong shape
+    // for it — the user asked to see what changed, not the tool's parameters. Every other tool
+    // keeps the compact card, where args/result are the useful payload.
+    if (diff !== null) {
+        return (
+            <div
+                className={cn(
+                    'w-full overflow-hidden rounded-xl border bg-bg-card',
+                    call.status === 'error' ? 'border-danger-text' : 'border-border',
+                )}
+            >
+                <div className="flex h-9 items-center gap-2 border-b border-border bg-bg-inset px-3">
+                    <FileText size={14} aria-hidden="true" className="shrink-0 text-text-secondary" />
+                    <span className="min-w-0 flex-1 truncate font-mono text-[13px] text-text-primary" title={diff.path}>
+                        {diff.path}
+                    </span>
+                    <span className="shrink-0 font-mono text-[13px] font-semibold tabular-nums text-success-text">+{diff.added}</span>
+                    <span className="shrink-0 font-mono text-[13px] font-semibold tabular-nums text-danger-text">−{diff.removed}</span>
+                    <span className={cn('shrink-0 text-[11px] font-semibold', STATUS_CLASS[call.status])}>
+                        {statusLabel(call.status)}
+                    </span>
+                </div>
+                <DiffBody diff={diff} />
+            </div>
+        );
+    }
+
     return (
         <CardShell
             icon={<Icon aria-hidden="true" size={16} />}
@@ -228,7 +262,6 @@ export function ToolCallCard({ call, approval, progress }: ToolCallCardProps) {
             statusClass={STATUS_CLASS[call.status]}
             failed={call.status === 'error'}
         >
-            {diff ? <DiffView diff={diff} /> : null}
             <JsonBlock label={vi.chat.args} value={call.args} />
             {call.result !== undefined && <JsonBlock label={vi.chat.result} value={call.result} />}
             {truncated && (

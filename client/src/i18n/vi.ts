@@ -238,6 +238,7 @@ export const vi = {
         filesChangedOne: '1 tệp thay đổi',
         filesChangedMany: '{count} tệp thay đổi',
         filesChangedLabel: 'Các tệp đã thay đổi trong lượt này',
+        diffEmpty: 'Không có nội dung để diff.',
         linesAdded: 'dòng thêm',
         linesRemoved: 'dòng bớt',
         thinkingActive: 'Đang suy nghĩ…',
