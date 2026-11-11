@@ -490,3 +490,141 @@ describe('restore of a DELETED instance', () => {
         expect(store.get(checkpoint.id)?.status).toBe('restored');
     });
 });
+
+describe('restore of a MOVED part (CFrame)', () => {
+  const cf = (x: number, y: number, z: number, rot: number[] = [1, 0, 0, 0, 1, 0, 0, 0, 1]) => ({
+    $cframe: { key: 'CFrame' as const, components: [x, y, z, ...rot], position: [x, y, z] },
+  });
+  const preCframe = cf(0, 5, 0);
+  const postCframe = cf(100, 5, 0);
+
+  const movedSnapshot = (): PreStateSnapshot => ({
+    entries: [{ kind: 'properties', path: 'Workspace.Part', properties: { Anchored: true, CFrame: preCframe } }],
+    inverse: [{ tool: 'set_properties', path: 'Workspace.Part', properties: { Anchored: true, CFrame: preCframe } }],
+    notes: [],
+  });
+  /** Records the checkpoint WITH the post-state, which is what drift detection compares against. */
+  const recordWithPost = (store: CheckpointStore, marker: ReturnType<typeof cf>) =>
+    store.record({
+      sessionId: 's1',
+      label: 'moved',
+      manifest: {
+        tool: 'studio.set_properties',
+        callId: 'c-move',
+        argsHash: 'h',
+        targets: ['Workspace.Part'],
+        outcome: 'ok',
+        preState: movedSnapshot(),
+        postState: postState(marker),
+        restorable: true,
+        restoreReason: 'ok',
+      },
+    });
+
+  const postState = (marker: ReturnType<typeof cf>) => ({
+    entries: [{ kind: 'properties' as const, path: 'Workspace.Part', properties: { Anchored: true, CFrame: marker } }],
+    notes: [],
+  });
+
+  /**
+   * Studio answers three ways: `inspect_instance` for the bag, `GetComponents` for the transform, and
+   * the per-key assignment report. `live` is mutable so a write can move the part for real.
+   */
+  function studioGateway(initial: ReturnType<typeof cf>) {
+    let live = initial;
+    const writes: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const gateway: McpGateway & { writes: typeof writes } = {
+      connected: true,
+      studioLinked: true,
+      server: { source: 'studio-builtin', path: 'C:/mcp.exe', version: '1' },
+      studio: { id: 'place', name: 'P' },
+      toolCount: 2,
+      lastError: null,
+      writes,
+      listTools: async () => ['inspect_instance', 'execute_luau'].map((name) => ({
+        name, description: name, parameters: { type: 'object', properties: { path: {}, code: {} } },
+      })),
+      callTool: async (name, args) => {
+        const record = (args ?? {}) as Record<string, unknown>;
+        writes.push({ tool: name, args: record });
+        if (name === 'inspect_instance') {
+          return JSON.stringify({ properties: { Anchored: true, 'CFrame.Position': live.$cframe.position.join(', ') } });
+        }
+        const code = String(record.code ?? '');
+        if (code.includes('GetComponents')) {
+          return JSON.stringify({ key: 'CFrame', components: live.$cframe.components });
+        }
+        const match = /CFrame\.new\(([^)]*)\)/.exec(code);
+        if (match !== null) {
+          const values = match[1].split(',').map((part) => Number(part.trim()));
+          live = { $cframe: { key: 'CFrame', components: values, position: values.slice(0, 3) } };
+        }
+        return JSON.stringify({ applied: ['CFrame'], failed: [] });
+      },
+      reconnect: async () => undefined,
+      close: async () => undefined,
+    };
+    return gateway;
+  }
+
+  it('previews clean while the part still holds what the turn wrote', async () => {
+    const store = new CheckpointStore(db());
+    const checkpoint = recordWithPost(store, postCframe);
+    const previewed = await previewRestore(studioGateway(postCframe), store, checkpoint.id, undefined, false);
+    expect(previewed.ok).toBe(true);
+    if (!previewed.ok) return;
+    expect(previewed.preview.clean).toBe(true);
+    expect(previewed.preview.steps[0]).toMatchObject({ action: 'restore-properties' });
+  });
+
+  it('refuses when the part was moved by hand after the turn', async () => {
+    // The plan's absolute rule: never overwrite a hand edit. A move is a hand edit.
+    const store = new CheckpointStore(db());
+    const checkpoint = recordWithPost(store, postCframe);
+    // Moved by hand to a THIRD position: neither what the snapshot holds nor what the turn wrote.
+    const handMoved = studioGateway(cf(42, 9, 9));
+    const drifted = await previewRestore(handMoved, store, checkpoint.id, undefined, true);
+    expect(drifted.ok).toBe(true);
+    if (!drifted.ok) return;
+    expect(drifted.preview.clean).toBe(false);
+    expect(drifted.preview.drift.join(' ')).toContain('di chuyển');
+    const refused = await applyRestore(handMoved, store, checkpoint.id, undefined, true);
+    expect(refused).toEqual({ ok: false, reason: 'NOT_RESTORABLE' });
+    expect(handMoved.writes.filter((call) => call.tool === 'execute_luau').some((call) => /inst\[key\] = value/.test(String(call.args.code)))).toBe(false);
+  });
+
+  it('writes the recorded transform back and verifies it through a fresh read', async () => {
+    const store = new CheckpointStore(db());
+    const checkpoint = recordWithPost(store, postCframe);
+    const gateway = studioGateway(postCframe);
+    const restored = await applyRestore(gateway, store, checkpoint.id);
+    expect(restored.ok).toBe(true);
+    if (!restored.ok) return;
+    expect(restored.result).toMatchObject({ status: 'restored', failed: [] });
+    const code = gateway.writes.map((call) => String(call.args.code ?? ''));
+    expect(code.some((text) => text.includes('CFrame.new(0, 5, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1)'))).toBe(true);
+    expect(store.get(checkpoint.id)?.status).toBe('restored');
+  });
+
+  it('reports restore-failed when the assignment claims success but the part never moves', async () => {
+    // The anti-lie rule, for the one property whose value the bag does not carry: the report says
+    // "applied" while the live transform stays where the turn left it, and the read-back must catch it.
+    const store = new CheckpointStore(db());
+    const checkpoint = recordWithPost(store, postCframe);
+    const gateway = studioGateway(postCframe);
+    const inner = gateway.callTool;
+    gateway.callTool = async (name, args) => {
+      const record_ = (args ?? {}) as Record<string, unknown>;
+      if (String(record_.code ?? '').includes('CFrame.new(')) {
+        gateway.writes.push({ tool: name, args: record_ });
+        return JSON.stringify({ applied: ['CFrame'], failed: [] });
+      }
+      return inner(name, args);
+    };
+    const restored = await applyRestore(gateway, store, checkpoint.id);
+    expect(restored.ok).toBe(true);
+    if (!restored.ok) return;
+    expect(restored.result.status).toBe('restore-failed');
+    expect(restored.result.failed[0]?.reason).toContain('không khớp');
+  });
+});

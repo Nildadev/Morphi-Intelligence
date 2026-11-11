@@ -1,14 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import type { McpGateway, ToolSchema } from '../tools/types';
 import {
+  captureCframe,
   captureInstanceTree,
   deleteInstance,
   inspectInstance,
   instanceExists,
   propertiesFrom,
   recreateInstance,
+  reconstructValue,
   readScriptSource,
   restorableProperties,
+  sameCframe,
   scriptSourceFrom,
   setInstanceProperties,
   writeScriptSource,
@@ -561,5 +564,54 @@ describe('reconstructValue - BrickColor is left out on purpose', () => {
     expect(code).toContain('attempt("CollisionGroup", "Default")');
     expect(code).toContain('attempt("MaterialVariant", "Wood Grain")');
     expect(code).not.toContain('BrickColor.new');
+  });
+});
+
+describe('captureCframe / reconstructValue - the transform', () => {
+  const json = (key: string, components: number[]) => JSON.stringify({ key, components });
+
+  it('reads the twelve components of a Part CFrame', async () => {
+    const mcp = rawGateway({
+      execute_luau: () => json('CFrame', [1, 2, 3, 1, 0, 0, 0, 1, 0, 0, 0, 1]),
+    });
+    const captured = await captureCframe(mcp, 'Workspace.Part');
+    expect(captured).toEqual({
+      key: 'CFrame',
+      components: [1, 2, 3, 1, 0, 0, 0, 1, 0, 0, 0, 1],
+      position: [1, 2, 3],
+    });
+  });
+
+  it('falls back to a Model WorldPivot, which is the transform a Model actually owns', async () => {
+    const mcp = rawGateway({ execute_luau: () => json('WorldPivot', [5, 6, 7, 1, 0, 0, 0, 1, 0, 0, 0, 1]) });
+    expect((await captureCframe(mcp, 'Workspace.Model'))?.key).toBe('WorldPivot');
+  });
+
+  it('answers null for an instance with no transform, so no member is invented', async () => {
+    // A Script/Folder/ScreenGui has neither CFrame nor WorldPivot; writing one would fail the restore.
+    const mcp = rawGateway({ execute_luau: () => 'none' });
+    expect(await captureCframe(mcp, 'ServerScriptService.Main')).toBeNull();
+  });
+
+  it('answers null when the read itself failed', async () => {
+    const mcp = rawGateway({ execute_luau: () => 'error: attempt to index nil' });
+    expect(await captureCframe(mcp, 'Workspace.Gone')).toBeNull();
+  });
+
+  it('reconstructs the CFrame.new(x,y,z, R00..R21) literal, rotation included', async () => {
+    // 90° about the Y axis: the rotation is the half of a move a user notices first.
+    const literal = reconstructValue({
+      $cframe: { key: 'CFrame', components: [0, 5, 0, 0, 0, 1, 0, 1, 0, -1, 0, 0], position: [0, 5, 0] },
+    });
+    expect(literal).toBe('CFrame.new(0, 5, 0, 0, 0, 1, 0, 1, 0, -1, 0, 0)');
+  });
+
+  it('compares transforms as a matrix with float tolerance', async () => {
+    const marker = { $cframe: { key: 'CFrame' as const, components: [1, 2, 3, 1, 0, 0, 0, 1, 0, 0, 0, 1], position: [1, 2, 3] } };
+    expect(sameCframe(marker, { key: 'CFrame', components: [1, 2, 3, 1, 0, 0, 0, 1, 0, 0, 0, 1], position: [1, 2, 3] })).toBe(true);
+    expect(sameCframe(marker, { key: 'CFrame', components: [1, 2, 3.00001, 1, 0, 0, 0, 1, 0, 0, 0, 1], position: [1, 2, 3] })).toBe(true);
+    expect(sameCframe(marker, { key: 'CFrame', components: [1, 2, 4, 1, 0, 0, 0, 1, 0, 0, 0, 1], position: [1, 2, 4] })).toBe(false);
+    expect(sameCframe(marker, null)).toBe(false);
+    expect(sameCframe(undefined, { key: 'CFrame', components: [1, 2, 3, 1, 0, 0, 0, 1, 0, 0, 0, 1], position: [1, 2, 3] })).toBe(false);
   });
 });

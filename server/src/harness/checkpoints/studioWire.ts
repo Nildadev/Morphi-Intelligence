@@ -340,6 +340,38 @@ function isErrorText(result: unknown): boolean {
 }
 
 /**
+ * A CFrame captured through Luau, because the property bag cannot carry one.
+ *
+ * MEASURED LIVE: `inspect_instance` flattens a CFrame into the pseudo-paths `CFrame.Position` and
+ * `CFrame.Rotation`, which are not members of the instance at all ("not a valid member of Part"),
+ * so moving a part used to be completely non-restorable — the single most common Studio edit. The
+ * twelve components are read directly instead and written back as `CFrame.new(x, y, z, R00 … R21)`.
+ *
+ * The key is kept so a Model (which has `WorldPivot`, not `CFrame`) restores through the property it
+ * actually owns. `position` is a copy of the first three components: drift detection compares it
+ * against the bag's `CFrame.Position` string without re-deriving the matrix.
+ */
+export interface CapturedCframe {
+  key: 'CFrame' | 'WorldPivot';
+  components: number[];
+  position: number[];
+}
+
+/** Marker that carries a captured CFrame through the property pipeline. */
+export interface CframeValue {
+  $cframe: { key: 'CFrame' | 'WorldPivot'; components: number[]; position: number[] };
+}
+
+function isCframeValue(value: unknown): value is CframeValue {
+  if (value === null || typeof value !== 'object') return false;
+  const marker = (value as { $cframe?: unknown }).$cframe;
+  if (marker === null || typeof marker !== 'object') return false;
+  const components = (marker as { components?: unknown }).components;
+  return Array.isArray(components) && components.length === 12
+    && components.every((part) => typeof part === 'number' && Number.isFinite(part));
+}
+
+/**
  * Which keys of an `inspect_instance` bag are CANDIDATES for a restore.
  *
  * MEASURED on a live `Part`: the bag had 36 keys and 20 could not be written back. The serialisation
@@ -355,9 +387,10 @@ function isErrorText(result: unknown): boolean {
  * through. So the bag is no longer filtered by type: scalars are kept as CANDIDATES and
  * `setInstanceProperties` decides key by key, in isolation, recording what it could not apply.
  *
- * Only two things are rejected up front, because they can never be property assignments:
- *  - dotted keys (`CFrame.Position`) — pseudo-paths, not members;
- *  - non-scalars (objects/arrays) — no literal to emit.
+ * Only two kinds of key are rejected up front, because they can never be property assignments:
+ *  - dotted keys (`CFrame.Position`) — pseudo-paths, not members. Position and rotation are restored
+ *    from the separately captured `CFrame` marker instead (see `captureCframe`);
+ *  - non-scalars (objects/arrays) — no literal to emit, except the CFrame marker above.
  *
  * Note `Name` is not in the bag at all (it is the top-level `name` field), so renaming is not part of
  * a property restore.
@@ -367,6 +400,10 @@ export function restorableProperties(bag: Record<string, unknown>): Record<strin
   for (const [key, value] of Object.entries(bag)) {
     if (key.includes('.')) continue;
     if (NEVER_WRITABLE.has(key)) continue;
+    if (isCframeValue(value)) {
+      restorable[key] = value;
+      continue;
+    }
     const type = typeof value;
     if (type === 'number' || type === 'boolean' || type === 'string') restorable[key] = value;
   }
@@ -412,6 +449,11 @@ const NEVER_WRITABLE: ReadonlySet<string> = new Set([
  * so a misparse cannot silently write a wrong value (it just fails the pcall and stays skipped).
  */
 export function reconstructValue(value: unknown, key?: string): string {
+  if (isCframeValue(value)) {
+    // Twelve components: position then the 3x3 rotation, which is exactly the shape
+    // `CFrame.new(x, y, z, R00, R01, R02, R10, R11, R12, R20, R21, R22)` takes.
+    return `CFrame.new(${value.$cframe.components.map((part) => String(part)).join(', ')})`;
+  }
   if (typeof value === 'string') {
     // An enum arrives as the string `"Enum.Material.Plastic"`, which is ALREADY a valid Luau
     // expression — emitting it as a JSON string (the old behaviour) made every enum property fail
@@ -741,4 +783,80 @@ export async function instanceExists(
   if (answer === 'missing') return false;
   if (answer === 'exists') return true;
   return null;
+}
+
+/**
+ * Read the instance's CFrame (or a Model's `WorldPivot`) through Luau.
+ *
+ * Returns null when the instance owns neither — a `Script`, a `Folder` or a `ScreenGui` has no
+ * transform, and inventing one would make the restore write a member that does not exist. A failed
+ * Luau read is null too: "cannot read" must never become "no transform to restore".
+ */
+export async function captureCframe(
+  mcp: McpGateway,
+  path: string,
+  signal?: AbortSignal,
+): Promise<CapturedCframe | null> {
+  const tool = await pickTool(mcp, LUAU_CANDIDATES, signal);
+  if (tool === undefined) return null;
+
+  // `GetComponents` is the only exact form: `cf.Position` alone would lose the rotation, which is the
+  // half of a move that a user notices first (a part turned 90° looks like a different part).
+  const code = [
+    resolveLuau(path),
+    'if root == nil then return "none" end',
+    'local function comps(cf)',
+    '  local x, y, z, r00, r01, r02, r10, r11, r12, r20, r21, r22 = cf:GetComponents()',
+    '  return { x, y, z, r00, r01, r02, r10, r11, r12, r20, r21, r22 }',
+    'end',
+    'local okCf, cf = pcall(function() return root.CFrame end)',
+    'if okCf and typeof(cf) == "CFrame" then',
+    '  return game:GetService("HttpService"):JSONEncode({ key = "CFrame", components = comps(cf) })',
+    'end',
+    'local okWp, wp = pcall(function() return root.WorldPivot end)',
+    'if okWp and typeof(wp) == "CFrame" then',
+    '  return game:GetService("HttpService"):JSONEncode({ key = "WorldPivot", components = comps(wp) })',
+    'end',
+    'return "none"',
+  ].join('\n');
+
+  const result = await mcp.callTool(tool.name, { code, datamodel_type: DATAMODEL }, signal);
+  if (isErrorText(result) || typeof result !== 'string') return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result);
+  } catch {
+    return null;
+  }
+  const record = (parsed ?? {}) as { key?: unknown; components?: unknown };
+  const key = record.key;
+  const components = record.components;
+  if (key !== 'CFrame' && key !== 'WorldPivot') return null;
+  if (!Array.isArray(components) || components.length !== 12) return null;
+  const numbers = components.map((value) => (typeof value === 'number' ? value : Number(value)));
+  if (numbers.some((value) => !Number.isFinite(value))) return null;
+  return { key, components: numbers, position: numbers.slice(0, 3) };
+}
+
+/** A captured CFrame as it is stored in a property bag (marker, so it survives JSON round-trips). */
+export function cframeMarker(captured: CapturedCframe): CframeValue {
+  return { $cframe: { key: captured.key, components: captured.components, position: captured.position } };
+}
+
+/**
+ * Compare a stored CFrame marker with a freshly captured one.
+ *
+ * Rotation is compared as a MATRIX, not as Euler angles: `Orientation` is derived and would disagree
+ * on the gimbal edge (90° about X), which is a normal orientation for a part.
+ */
+export function sameCframe(stored: CframeValue | CapturedCframe | undefined, live: CapturedCframe | null): boolean {
+  if (stored === undefined || live === null) return false;
+  const left = '$cframe' in stored ? stored.$cframe : stored;
+  if (left.key !== live.key) return false;
+  return left.components.every((value, index) => Math.abs(value - live.components[index]) < 1e-4);
+}
+
+/** Is this stored property value a captured CFrame marker? */
+export function isCframeMarkerValue(value: unknown): value is CframeValue {
+  return isCframeValue(value);
 }

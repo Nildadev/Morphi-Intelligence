@@ -1,6 +1,8 @@
 import type { McpGateway } from '../tools/types';
 import {
+  captureCframe,
   captureInstanceTree,
+  cframeMarker,
   inspectInstance,
   readScriptSource,
   restorableProperties,
@@ -208,7 +210,11 @@ export async function snapshotPreState(
   } else {
     // Property writes and arbitrary Luau: snapshot the property bag when the path is known, so the
     // restore engine can at least attempt to re-apply it (verified by re-inspect afterwards).
-    const path = pathOf(args);
+    //
+    // A Luau property write carries no path in its args — `workspace.Part.CFrame = …` puts it in the
+    // code — so the same `pathFromLuau` the delete path uses reads it out. Without that, MOVING a part
+    // was not restorable at all, which is the most common Studio edit there is.
+    const path = pathOf(args) ?? pathFromLuau(codeOf(args) ?? '');
     if (path !== null) {
       const properties = await inspectInstance(mcp, path, signal);
       if (properties !== null) {
@@ -216,6 +222,11 @@ export async function snapshotPreState(
         // Scalars are kept as candidates and `setInstanceProperties` decides key by key, recording
         // what this build refuses — see `restorableProperties`.
         const restorable = restorableProperties(properties);
+        // The transform cannot come from the bag at all: it arrives as the pseudo-paths
+        // `CFrame.Position`/`CFrame.Rotation`, so it is read separately and stored as a marker. Without
+        // this, MOVING a part — the most common Studio edit there is — was not restorable.
+        const cframe = await captureCframe(mcp, path, signal);
+        if (cframe !== null) restorable[cframe.key] = cframeMarker(cframe);
         if (Object.keys(restorable).length === 0) {
           notes.push(`Không có thuộc tính nào của ${path} khôi phục được an toàn.`);
         } else {
@@ -344,7 +355,12 @@ export async function snapshotPostState(
       notes.push(`Không đọc lại được thuộc tính của ${entry.path} sau khi sửa.`);
       continue;
     }
-    entries.push({ kind: 'properties', path: entry.path, properties: restorableProperties(bag) });
+    const properties = restorableProperties(bag);
+    // The transform must be captured here too: drift detection compares the live CFrame with what the
+    // TURN wrote, and without a post marker a moved part would look hand-edited to itself.
+    const cframe = await captureCframe(mcp, entry.path, signal);
+    if (cframe !== null) properties[cframe.key] = cframeMarker(cframe);
+    entries.push({ kind: 'properties', path: entry.path, properties });
   }
   return { entries, notes };
 }

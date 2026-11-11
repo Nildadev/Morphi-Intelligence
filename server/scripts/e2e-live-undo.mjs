@@ -276,15 +276,91 @@ check('checkpoint is no longer restorable once restored', secondUndo.status >= 4
   JSON.stringify(secondUndo.body).slice(0, 400));
 
 // ---------------------------------------------------------------------------------------------
+// Scenario 4 — a MOVE: the transform has no bag entry of its own, so the undo must rebuild it
+// ---------------------------------------------------------------------------------------------
+console.log('\n[4] move turn (execute_luau sets a CFrame)');
+const partPath = 'Workspace.MorphiE2EPart';
+
+async function seedPart() {
+  return withStudio(async (client) => {
+    const code = 'local ws = game:GetService("Workspace")\n'
+      + 'local old = ws:FindFirstChild("MorphiE2EPart")\n'
+      + 'if old ~= nil then old:Destroy() end\n'
+      + 'local part = Instance.new("Part")\n'
+      + 'part.Name = "MorphiE2EPart"\n'
+      + 'part.Anchored = true\n'
+      + 'part.Size = Vector3.new(4, 2, 1)\n'
+      // A named rotation on purpose: a move that only translated would let a position-only restore pass.
+      + 'part.CFrame = CFrame.new(10, 5, 0) * CFrame.Angles(math.rad(90), 0, 0)\n'
+      + 'part.Parent = ws\n'
+      + 'return "ok"';
+    const result = await client.callTool({ name: 'execute_luau', arguments: { code, datamodel_type: 'Edit' } });
+    return !result.isError;
+  });
+}
+
+/** Position + the rotation matrix, which is what a restore has to reproduce exactly. */
+async function partTransform() {
+  return withStudio(async (client) => {
+    const code = 'local part = game:GetService("Workspace"):FindFirstChild("MorphiE2EPart")\n'
+      + 'if part == nil then return "missing" end\n'
+      + 'local x, y, z, r00, r01, r02, r10, r11, r12, r20, r21, r22 = part.CFrame:GetComponents()\n'
+      + 'return string.format("%.3f,%.3f,%.3f|%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f",'
+      + ' x, y, z, r00, r01, r02, r10, r11, r12, r20, r21, r22)';
+    const result = await client.callTool({ name: 'execute_luau', arguments: { code, datamodel_type: 'Edit' } });
+    return String(result.content?.find((part) => typeof part.text === 'string')?.text ?? '').trim();
+  });
+}
+
+check('seed part with position and rotation', await seedPart(), partPath);
+const beforeMove = await partTransform();
+check('part starts at 10,5,0 rotated 90° about X', beforeMove.startsWith('10.000,5.000,0.000|'), beforeMove);
+
+const moveSession = await newSession('e2e-move-undo');
+const moveTurn = await turn(moveSession, '/script studio-move');
+check('move turn stream finished', moveTurn.status === 200, `${moveTurn.sse.length} bytes`);
+const afterMove = await partTransform();
+check('part really moved by the turn', afterMove !== beforeMove && afterMove.startsWith('50.000,10.000,0.000|'), afterMove);
+
+const moved = await restorableCallIds(moveSession);
+check('move checkpoint recorded as restorable', moved.restorable.length === 1,
+  `${moved.restorable.length} restorable: ${moved.callIds.join(', ')}`);
+if (moved.restorable.length === 0) console.log(JSON.stringify(moved.rows, null, 2).slice(0, 2000));
+
+const moveUndo = await api('POST', `/api/sessions/${moveSession}/undo-turn`, { callIds: moved.callIds });
+check('move undo-turn 200', moveUndo.status === 200, JSON.stringify(moveUndo.body).slice(0, 400));
+check('move undo reported a restore', moveUndo.body?.status === 'restored', JSON.stringify(moveUndo.body).slice(0, 600));
+const movedBack = await partTransform();
+check('part back at its exact old position AND rotation', movedBack === beforeMove, `${JSON.stringify(movedBack)} vs ${JSON.stringify(beforeMove)}`);
+
+// Move it BY HAND to a third position, then the undo must refuse rather than overwrite.
+await withStudio((client) => client.callTool({
+  name: 'execute_luau',
+  arguments: {
+    code: 'local part = game:GetService("Workspace"):FindFirstChild("MorphiE2EPart")\n'
+      + 'part.CFrame = CFrame.new(999, 0, 999)\nreturn "ok"',
+    datamodel_type: 'Edit',
+  },
+}));
+const handMoved = await partTransform();
+check('part hand-moved to a third position', handMoved.startsWith('999.000,0.000,999.000|'), handMoved);
+const afterFirstUndo = await api('POST', `/api/sessions/${moveSession}/undo-turn`, { callIds: moved.callIds });
+check('an already-restored turn is not restorable again', afterFirstUndo.body?.status !== 'restored',
+  JSON.stringify(afterFirstUndo.body).slice(0, 400));
+check('the hand move survived', (await partTransform()) === handMoved, await partTransform());
+
+// ---------------------------------------------------------------------------------------------
 // Cleanup — the place must not keep probe fixtures
 // ---------------------------------------------------------------------------------------------
 await destroyLive(A);
 await destroyLive(B);
 await destroyLive(modelPath);
+await destroyLive(partPath);
 const goneA = await readLive(A);
 const goneB = await readLive(B);
 check('probe scripts removed from the place', !goneA.ok && !goneB.ok);
 check('probe model removed from the place', (await modelShape()) === 'missing');
+check('probe part removed from the place', (await partTransform()) === 'missing');
 
 console.log(failures === 0 ? '\nE2E OK' : `\nE2E FAILED (${failures})`);
 process.exit(failures === 0 ? 0 : 1);

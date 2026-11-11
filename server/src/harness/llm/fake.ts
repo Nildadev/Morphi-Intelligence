@@ -33,6 +33,10 @@ export const FAKE_SCRIPTS = [
   // tool), so the pre-state capture has to read the tree BEFORE the destroy and undo has to
   // recreate it. Exercised against live Studio by `scripts/e2e-live-undo.mjs` scenario 3.
   'studio-delete',
+  // Move probe: changes a real part's CFrame through `execute_luau`, so the snapshot has to capture
+  // the transform (the bag only carries the pseudo-paths `CFrame.Position`/`CFrame.Rotation`) and the
+  // undo has to put position AND rotation back. Scenario 4 of `scripts/e2e-live-undo.mjs`.
+  'studio-move',
   // Design tour: one turn that calls every row shape the transcript can render (read, search,
   // command, edit, create, multi-edit, failure), so the whole log styling can be inspected in a
   // single screen without a Roblox Studio connection.
@@ -261,6 +265,29 @@ async function* fakeStream(request: LlmRequest, fallback: FakeScript, slowDelay:
       return;
     }
     yield { type: 'text_delta', text: `Đã xoá ${path} trên place thật.` };
+    yield { type: 'finish', reason: 'stop' };
+    return;
+  }
+
+  if (script === 'studio-move') {
+    const callId = 'fake_move_1';
+    if (!answered.has(callId)) {
+      const code = 'local segs = {"Workspace", "MorphiE2EPart"}\n'
+        + 'local root = game:GetService(segs[1])\n'
+        + 'for i = 2, #segs do\n  if root == nil then break end\n  root = root:FindFirstChild(segs[i])\nend\n'
+        + 'if root == nil then return "error: not found" end\n'
+        + 'root.CFrame = CFrame.new(50, 10, 0) * CFrame.Angles(0, math.pi / 2, 0)\n'
+        + 'return "ok"';
+      const args = { code, datamodel_type: 'Edit' };
+      yield { type: 'tool_call_start', callId, name: 'studio.execute_luau' };
+      if (signal.aborted) return;
+      yield { type: 'tool_call_delta', callId, argsDelta: JSON.stringify(args) };
+      if (signal.aborted) return;
+      yield { type: 'tool_call_end', callId, name: 'studio.execute_luau', args };
+      yield { type: 'finish', reason: 'tool_calls' };
+      return;
+    }
+    yield { type: 'text_delta', text: 'Đã di chuyển MorphiE2EPart trên place thật.' };
     yield { type: 'finish', reason: 'stop' };
     return;
   }

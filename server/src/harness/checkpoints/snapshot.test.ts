@@ -255,3 +255,43 @@ describe('pathFromLuau - the target of a delete has to come out of the code', ()
         expect(isRestorable(snapshot)).toBe(false);
     });
 });
+
+describe('snapshotPreState - a Luau property write names its target in the code', () => {
+    it('snapshots the bag of the instance a Luau move touches', async () => {
+        // MEASURED: `workspace.Part.CFrame = …` carries no `path` arg, so without reading the code the
+        // most common Studio edit had no inverse at all.
+        const calls: string[] = [];
+        const snapshot = await snapshotPreState(
+            gateway({
+                listTools: tools('execute_luau', 'inspect_instance'),
+                callTool: async (name: string, args: unknown) => {
+                    const code = String((args as { code?: string }).code ?? '');
+                    calls.push(name);
+                    if (code.includes('GetComponents')) return JSON.stringify({ key: 'CFrame', components: [1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1] });
+                    if (name === 'inspect_instance') return JSON.stringify({ properties: { Anchored: true } });
+                    return 'none';
+                },
+            }),
+            'studio.execute_luau',
+            { code: 'local segs = {"Workspace", "Part"}\nroot.CFrame = CFrame.new(5, 0, 0)', datamodel_type: 'Edit' },
+        );
+        expect(snapshot.entries[0]).toMatchObject({ kind: 'properties', path: 'Workspace.Part' });
+        expect(snapshot.inverse[0]).toMatchObject({ tool: 'set_properties', path: 'Workspace.Part' });
+        const properties = (snapshot.entries[0] as { properties: Record<string, unknown> }).properties;
+        expect(properties.CFrame).toEqual({
+            $cframe: { key: 'CFrame', components: [1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1], position: [1, 0, 0] },
+        });
+        expect(calls).toContain('inspect_instance');
+        expect(isRestorable(snapshot)).toBe(true);
+    });
+
+    it('stays non-restorable when the Luau names no readable instance', async () => {
+        const snapshot = await snapshotPreState(
+            gateway({ listTools: tools('execute_luau') }),
+            'studio.execute_luau',
+            { code: 'print("hello")', datamodel_type: 'Edit' },
+        );
+        expect(snapshot.inverse).toEqual([]);
+        expect(isRestorable(snapshot)).toBe(false);
+    });
+});

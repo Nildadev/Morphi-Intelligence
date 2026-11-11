@@ -271,6 +271,32 @@ unambiguous, and MEASURED LIVE on `Place1` after learning it the hard way:
 
 `setInstanceProperties` still isolates every key in its own `pcall` and reports refusals.
 
+### Undoing a MOVE — the transform is captured outside the bag
+
+Moving or rotating a part is the most common Studio edit there is, and it had NO inverse: the bag only
+carries the pseudo-paths `CFrame.Position`/`CFrame.Rotation`, which are not members of the instance
+("not a valid member of Part") and were dropped as non-assignable.
+
+- `captureCframe` reads the twelve components of `CFrame` (or a Model's `WorldPivot`, which is the
+  transform a Model actually owns) through `GetComponents`: position plus the 3x3 rotation, because a
+  part turned 90° looks like a different part and a position-only restore would silently lose that.
+- The capture is stored as a MARKER (`{$cframe:{…}}`) in the property bag, so it survives the JSON
+  round-trip through the manifest and flows through the one per-key `pcall` pipeline.
+  `reconstructValue` turns it into `CFrame.new(x, y, z, R00, R01, R02, R10, R11, R12, R20, R21, R22)`.
+- **Drift compares the matrix**, not Euler angles: `Orientation` is derived and disagrees on the gimbal
+  edge (90° about X is a normal orientation). A transform therefore has the same three cases as a
+  script — live == post ⇒ invert; live == pre ⇒ no-op note; neither ⇒ refuse.
+- **The post-state captures the transform too**, otherwise a moved part would look hand-edited to its
+  own undo (the marker would compare against `undefined`).
+- Verification is a fresh `captureCframe` after the write, the same anti-lie rule as scripts: a report
+  of "applied" with a part that never moved is `restore-failed`, not `restored`.
+- A Luau property write carries no `path` in its args either, so the same `pathFromLuau` used for
+  deletes reads the target out of the code (`local segs = {"Workspace", "Part"}`, `workspace.Part`).
+
+Proved live: a part at `10,5,0` rotated 90° about X, moved by the turn to `50,10,0` rotated 90° about
+Y, comes back to `10.000,5.000,0.000|1.000,0.000,0.000,0.000,-0.000,-1.000,0.000,1.000,-0.000` — the
+exact matrix the snapshot recorded — and a hand move to `999,0,999` is left alone.
+
 ### Undoing a DELETE — the instance is rebuilt, not just reported
 
 A delete used to make a whole turn non-restorable: there is nothing left to read afterwards. The
@@ -295,23 +321,23 @@ snapshot now captures the subtree BEFORE the destroy and the inverse is a recrea
 
 ## Remaining gaps (documented, intentionally not done)
 
-- **`CFrame` rotation** is still refused-and-reported: the bag only carries flattened pseudo-paths
-  (`CFrame.Position`, `PivotOffset.Rotation`) that are not members of the instance at all, so there is
-  no literal to emit without inventing a CFrame the snapshot never recorded.
 - **A recreate is shape-faithful, not byte-faithful**: class, name, tree and every writable property
   come back (proved live: `Material`, `Anchored`, `Color`, `Size`, `Transparency` all exact), but
   children of a refused class cannot be rebuilt, and a duplicate child name resolves to the first match
   on the path the recreate uses.
+- **`PivotOffset`** (an OFFSET from the pivot, not the pivot itself) is still refused-and-reported. It
+  is a correction applied on top of a transform, and restoring it without the transform it was measured
+  against would move the instance somewhere neither state had it.
 
 ## Verification gate (last green run)
 
-- `server tsc --noEmit` clean; `server vitest` **759 passed / 5 skipped** (5 skip = live probe).
+- `server tsc --noEmit` clean; `server vitest` **771 passed / 5 skipped** (5 skip = live probe).
 - `MORPHI_LIVE_STUDIO=1 npx vitest run src/harness/checkpoints/liveProbe.test.ts` → **5/5 passed**
   on real `Place1` (script restore snapshot→mutate→undo→read-back; property restore incl. string
   `CollisionGroup` + `skipped`; Vector3/BrickColor reconstruction restored and re-inspected).
-- `node scripts/e2e-live-undo.mjs` against the live server → **E2E OK, 27/27 PASS** — now three
-  scenarios: single call, batch (all-or-nothing), and a DELETE that the undo rebuilds from the
-  pre-state capture.
+- `node scripts/e2e-live-undo.mjs` against the live server → **E2E OK, four scenarios**: single call,
+  batch (all-or-nothing), a DELETE the undo rebuilds from the pre-state capture, and a MOVE whose
+  position AND rotation come back to the exact recorded matrix.
 - `client tsc --noEmit` clean; `client vitest` **631 passed**.
 - `Place1` verified CLEAN after every live run (no leftover probe scripts/instances).
 

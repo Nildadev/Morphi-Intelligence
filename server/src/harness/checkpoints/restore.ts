@@ -2,13 +2,18 @@ import type { McpGateway } from '../tools/types';
 import type { CheckpointStore, WorkspaceCheckpoint } from './store';
 import { isRestorable, type PostStateEntry, type PostStateSnapshot, type PreStateSnapshot } from './snapshot';
 import {
+  captureCframe,
   deleteInstance,
   inspectInstance,
   instanceExists,
+  isCframeMarkerValue,
   readScriptSource,
   recreateInstance,
+  sameCframe,
   setInstanceProperties,
   writeScriptSource,
+  type CapturedCframe,
+  type CframeValue,
   type InverseStep,
   type PropertyWriteResult,
   type RecreateResult,
@@ -132,8 +137,45 @@ async function detectDrift(
         continue;
       }
       const post = postOf(entry.path);
+      // A CFrame is not in the bag under its own key (it arrives as the pseudo-paths
+      // `CFrame.Position`/`CFrame.Rotation`), so it cannot be compared like the scalars: it is read
+      // back with `captureCframe` and diffed as a matrix. Without this every moved part would read as
+      // drift (undefined vs marker) and its own undo would be refused.
+      const cframeKeys = new Set<string>(['CFrame', 'WorldPivot']);
+      const liveCframe = (): Promise<CapturedCframe | null> => captureCframe(mcp, entry.path, signal);
+      const scalarKeys = (source: Record<string, unknown>): string[] =>
+        Object.keys(source).filter((key) => !cframeKeys.has(key));
+      const cframeKeyOf = (source: Record<string, unknown>): string | undefined =>
+        Object.keys(source).find((key) => cframeKeys.has(key));
+
+      if (cframeKeyOf(entry.properties) !== undefined) {
+        // Three cases, exactly like the scalars below (see the module note): live == post means the
+        // turn's own transform, invert it; live == pre means already restored, a no-op; anything else
+        // means it was moved or rotated by hand, and overwriting that is what the plan forbids.
+        const liveTransform = await liveCframe();
+        const preKey = cframeKeyOf(entry.properties) ?? '';
+        const postKey = post !== undefined && post.kind === 'properties' ? cframeKeyOf(post.properties) : undefined;
+        const preMarker = entry.properties[preKey];
+        const postMarker = postKey === undefined || post === undefined || post.kind !== 'properties'
+          ? undefined
+          : post.properties[postKey];
+        const atPre = sameCframe(preMarker as CframeValue, liveTransform);
+        const atPost = postMarker !== undefined && sameCframe(postMarker as CframeValue, liveTransform);
+        const clean = postMarker === undefined ? !atPre : atPost;
+        if (!clean) {
+          if (atPre) {
+            notes.push(`${entry.path} đang ở đúng vị trí cũ — không có gì để khôi phục.`);
+          } else {
+            const message = `${entry.path} đã bị di chuyển/xoay tay sau lượt này — không ghi đè lên thay đổi đó.`;
+            if (strict) drift.push(message);
+            else notes.push(message);
+          }
+          continue;
+        }
+      }
+
       const changedSincePost = post !== undefined && post.kind === 'properties'
-        ? Object.keys({ ...entry.properties, ...post.properties })
+        ? scalarKeys({ ...entry.properties, ...post.properties })
           .filter((key) => !sameValue(live[key], post.properties[key]))
         : [];
       if (changedSincePost.length > 0) {
@@ -146,9 +188,8 @@ async function detectDrift(
       }
       if (post !== undefined) continue;
       // No post-state (an older checkpoint): fall back to the pre-state comparison.
-      const changed = Object.entries(entry.properties)
-        .filter(([key, before]) => !sameValue(live[key], before))
-        .map(([key]) => key);
+      const changed = scalarKeys(entry.properties)
+        .filter((key) => !sameValue(live[key], entry.properties[key]));
       if (changed.length > 0) {
         // The property still holds what the turn wrote, not what the snapshot recorded: restoring
         // would overwrite a hand edit, so the plan refuses.
@@ -350,8 +391,17 @@ async function applyStep(
   // server claims it assigned are checked — a refused key is reported, not counted as a mismatch.
   const live = await inspectInstance(mcp, step.path, signal);
   if (live === null) return 'Đã đặt thuộc tính nhưng không đọc lại được để xác nhận.';
-  const mismatched = written.applied
-    .filter((key) => !sameValue(live[key], step.properties[key]));
+  const mismatched: string[] = [];
+  for (const key of written.applied) {
+    const before = step.properties[key];
+    if (isCframeMarkerValue(before)) {
+      // A transform has no bag entry of its own: compare the matrix, not `live['CFrame']`.
+      const after = await captureCframe(mcp, step.path, signal);
+      if (!sameCframe(before, after)) mismatched.push(key);
+      continue;
+    }
+    if (!sameValue(live[key], before)) mismatched.push(key);
+  }
   return mismatched.length === 0 ? null : `Thuộc tính đọc lại không khớp bản sao (${mismatched.join(', ')}).`;
 }
 
