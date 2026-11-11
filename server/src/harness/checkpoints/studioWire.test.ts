@@ -59,7 +59,6 @@ describe('restorableProperties - the lossy bag', () => {
     Reflectance: 0,
     CanCollide: true,
     Locked: false,
-    // Enums, composites, BrickColor and capability-locked keys arrive as strings and throw on write.
     Material: 'Enum.Material.Plastic',
     Shape: 'Enum.PartType.Block',
     Size: '4, 1.2, 2',
@@ -71,33 +70,30 @@ describe('restorableProperties - the lossy bag', () => {
     MaterialVariant: '',
   };
 
-  it('keeps only the numbers and booleans that always round-trip', () => {
-    expect(restorableProperties(liveBag)).toEqual({
-      Anchored: true,
-      Transparency: 0,
-      Reflectance: 0,
-      CanCollide: true,
-      Locked: false,
-    });
-  });
-
-  it('drops the string keys that threw when written back live', () => {
-    // Measured failures: "Vector3 expected, got string", "Invalid value ... for enum Material",
-    // "BrickColor expected, got string", "SecurityCapabilities expected, got string".
+  it('keeps every scalar as a candidate, including writable strings', () => {
+    // A writable string (`CollisionGroup`) and a serialised one (`BrickColor`) are indistinguishable
+    // by value, so both stay candidates and `setInstanceProperties` decides key by key, live.
     const restorable = restorableProperties(liveBag);
-    for (const key of ['Material', 'Shape', 'Size', 'Color', 'BrickColor', 'Capabilities', 'UniqueId']) {
-      expect(restorable[key], `${key} must not be restored`).toBeUndefined();
-    }
+    expect(restorable.CollisionGroup).toBe('Default');
+    expect(restorable.MaterialVariant).toBe('');
+    expect(restorable.BrickColor).toBe('Medium stone grey');
+    expect(restorable.Anchored).toBe(true);
+    expect(restorable.Transparency).toBe(0);
   });
 
-  it('drops flattened pseudo-paths like CFrame.Position', () => {
-    // "CFrame.Position is not a valid member of Part" — a dotted bag key is never settable.
+  it('drops flattened pseudo-paths, which are never members', async () => {
+    // "CFrame.Position is not a valid member of Part" — a dotted bag key can never be assigned.
     const restorable = restorableProperties({ 'CFrame.Position': '1, 2, 3', 'PivotOffset.Rotation': '0, 0, 0', Transparency: 0.5 });
     expect(restorable).toEqual({ Transparency: 0.5 });
   });
 
-  it('returns an empty bag when nothing can be restored, so the caller can say so', () => {
-    expect(restorableProperties({ Size: '4, 1.2, 2', Material: 'Enum.Material.Plastic' })).toEqual({});
+  it('drops non-scalars, which have no literal to emit', () => {
+    const restorable = restorableProperties({ Tags: ['a'], Nested: { x: 1 }, Nothing: null, Transparency: 0.5 });
+    expect(restorable).toEqual({ Transparency: 0.5 });
+  });
+
+  it('returns an empty bag when nothing can be attempted', () => {
+    expect(restorableProperties({ 'CFrame.Position': '1, 2, 3' })).toEqual({});
   });
 });
 
@@ -253,25 +249,48 @@ describe('deleteInstance', () => {
 });
 
 describe('setInstanceProperties', () => {
+  /** The Luau reports through HttpService:JSONEncode so the adapter parses rather than scrapes. */
+  const report = (applied: string[], failed: Array<{ key: string; reason: string }> = []) =>
+    JSON.stringify({ applied, failed });
+
   it('binds the instance before indexing it, so the Luau can actually run', async () => {
-    // The first version emitted `inst[key] = ...` with no `inst` local — invalid Luau every time.
-    const mcp = gateway({ execute_luau: () => 'ok' });
+    // An earlier version emitted `inst[key] = ...` with no `inst` local — invalid Luau every time.
+    const mcp = gateway({ execute_luau: () => report(['Transparency']) });
     await setInstanceProperties(mcp, 'Workspace.Part', { Transparency: 0.5 });
     const code = String(mcp.calls[0]?.args.code);
     expect(code).toContain('local inst = root');
-    expect(code).toContain('inst["Transparency"] = 0.5');
+    expect(code).toContain('attempt("Transparency", 0.5)');
+  });
+
+  it('isolates every key in its own pcall so one refusal cannot fail the rest', async () => {
+    // MEASURED LIVE: an unconditional re-apply threw on the first bad key ("Vector3 expected, got
+    // string") and failed the whole restore.
+    const mcp = gateway({
+      execute_luau: () => report(['Transparency', 'Anchored'], [{ key: 'Size', reason: 'Vector3 expected, got string' }]),
+    });
+    const written = await setInstanceProperties(mcp, 'Workspace.Part', { Transparency: 0, Anchored: true, Size: '4, 1.2, 2' });
+    expect(written.applied).toEqual(['Transparency', 'Anchored']);
+    expect(written.skipped).toEqual([{ key: 'Size', reason: 'Vector3 expected, got string' }]);
+    const code = String(mcp.calls[0]?.args.code);
+    expect(code).toContain("local ok, err = pcall(function() inst[key] = value end)");
+    expect(code).toContain('HttpService');
   });
 
   it('escapes a property value that needs quoting', async () => {
-    const mcp = gateway({ execute_luau: () => 'ok' });
-    await setInstanceProperties(mcp, 'Workspace.Part', { Name: 'has "quotes"' });
-    expect(String(mcp.calls[0]?.args.code)).toContain('inst["Name"] = "has \\"quotes\\""');
+    const mcp = gateway({ execute_luau: () => report(['CollisionGroup']) });
+    await setInstanceProperties(mcp, 'Workspace.Part', { CollisionGroup: 'has "quotes"' });
+    expect(String(mcp.calls[0]?.args.code)).toContain('attempt("CollisionGroup", "has \\"quotes\\"")');
   });
 
   it('prefers a dedicated property tool when a fake gateway exposes one', async () => {
     const mcp = gateway({ 'studio.set_properties': () => ({ ok: true }) });
-    expect(await setInstanceProperties(mcp, 'A', { X: 1 })).toBe(true);
+    expect(await setInstanceProperties(mcp, 'A', { X: 1 })).toEqual({ applied: ['X'], skipped: [] });
     expect(mcp.calls[0]).toEqual({ tool: 'studio.set_properties', args: { path: 'A', properties: { X: 1 } } });
+  });
+
+  it('throws instead of assuming success when the report cannot be parsed', async () => {
+    const mcp = gateway({ execute_luau: () => 'ok' });
+    await expect(setInstanceProperties(mcp, 'A', { X: 1 })).rejects.toThrow('không trả về kết quả đọc được');
   });
 });
 

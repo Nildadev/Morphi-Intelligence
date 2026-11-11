@@ -244,6 +244,7 @@ describe.skipIf(!gated)('live Studio wire (MORPHI_LIVE_STUDIO=1)', () => {
         `part.Name = ${JSON.stringify(name)}`,
         'part.Transparency = 0',
         'part.Anchored = true',
+        'part.CollisionGroup = "Default"',
         'part.Parent = game:GetService("Workspace")',
         'return "ok"',
       ].join('\n'));
@@ -257,9 +258,12 @@ describe.skipIf(!gated)('live Studio wire (MORPHI_LIVE_STUDIO=1)', () => {
       if (entry?.kind !== 'properties') return;
       expect(entry.properties.Transparency).toBe(0);
       expect(entry.properties.Anchored).toBe(true);
+      // STRING properties are candidates now: `CollisionGroup` must survive the snapshot, or a
+      // string restore is silently impossible. (Lossy keys stay candidates too and get skipped at
+      // write time with Studio's own reason — see the `skipped` assertions below.)
+      expect(entry.properties.CollisionGroup).toBe('Default');
       // The lossy keys must have been dropped, or the restore throws on `CFrame.Rotation`.
       expect(Object.keys(entry.properties).some((key) => key.includes('.'))).toBe(false);
-      expect(entry.properties.Size).toBeUndefined();
 
       const checkpoint = store.record({
         sessionId: 's1',
@@ -276,20 +280,24 @@ describe.skipIf(!gated)('live Studio wire (MORPHI_LIVE_STUDIO=1)', () => {
         },
       });
 
-      // 3. Mutate with Luau, then prove it landed so a passing restore cannot be a no-op.
+      // 3. Mutate with Luau — a number, a boolean AND a string — then prove it landed so a passing
+      // restore cannot be a no-op.
+      const customGroup = `MorphiProbeGroup${probeId()}`;
       const mutated = await luau([
         `local part = game:GetService("Workspace"):FindFirstChild(${JSON.stringify(name)})`,
         'if part == nil then return "error: not found" end',
         'part.Transparency = 0.75',
         'part.Anchored = false',
+        `part.CollisionGroup = ${JSON.stringify(customGroup)}`,
         'return "ok"',
       ].join('\n'));
       expect(mutated.trim()).toBe('ok');
       const dirty = await inspectInstance(gateway, path);
       expect(dirty?.Transparency).toBe(0.75);
       expect(dirty?.Anchored).toBe(false);
+      expect(dirty?.CollisionGroup).toBe(customGroup);
 
-      // 4. Preview must be clean (the property still matches what the turn wrote).
+      // 4. Preview must be clean (the properties still match what the turn wrote).
       const previewed = await previewRestore(gateway, store, checkpoint.id);
       expect(previewed.ok).toBe(true);
       if (previewed.ok) {
@@ -304,10 +312,17 @@ describe.skipIf(!gated)('live Studio wire (MORPHI_LIVE_STUDIO=1)', () => {
       expect(restored.result.failed).toEqual([]);
       expect(restored.result.status).toBe('restored');
 
-      // 6. Studio itself must hold the old values again.
+      // 6. Studio itself must hold the old values again — including the STRING property.
       const after = await inspectInstance(gateway, path);
       expect(after?.Transparency).toBe(0);
       expect(after?.Anchored).toBe(true);
+      expect(after?.CollisionGroup).toBe('Default');
+
+      // 7. The lossy keys were refused per-key, in Studio's own words, and that did NOT fail the
+      // restore: `UniqueId` is capability-locked on every Instance.
+      expect(restored.result.skipped.length).toBeGreaterThan(0);
+      for (const skip of restored.result.skipped) expect(skip.reason.length).toBeGreaterThan(0);
+      expect(restored.result.skipped.some((skip) => skip.key === 'UniqueId')).toBe(true);
       expect(store.get(checkpoint.id)?.status).toBe('restored');
     } finally {
       const cleaned = await deleteInstance(gateway, path).catch((error) => {

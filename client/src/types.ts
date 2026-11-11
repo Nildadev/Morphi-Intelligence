@@ -619,12 +619,22 @@ export interface RestoreResult {
   status: 'restored' | 'restore-failed';
   applied: number;
   failed: Array<{ path: string; reason: string }>;
+  /** Properties this Studio build refused, in its own words. Not a failure. */
+  skipped?: RestoreSkipped[];
+}
+
+export interface RestoreSkipped {
+  path: string;
+  key: string;
+  reason: string;
 }
 
 /** Turn-level undo result — server/src/harness/checkpoints/restore.ts `restoreTurn`. */
 export interface TurnRestoreResult {
   restored: string[];
   failed: Array<{ path: string; reason: string }>;
+  /** Properties this Studio build refused, in its own words. */
+  skipped?: RestoreSkipped[];
   notRestorable: Array<{ checkpointId: string; reason: string }>;
   drift: string[];
   status: 'restored' | 'restore-failed' | 'refused';

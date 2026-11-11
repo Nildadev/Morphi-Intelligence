@@ -247,6 +247,10 @@ export const vi = {
         undoNothing: 'Không có thay đổi nào khôi phục được cho lượt này.',
         undoDrift: 'Script đã bị sửa tay sau lượt này — không ghi đè. Khôi phục đã dừng.',
         undoPartial: 'Chỉ khôi phục được một phần:',
+        // Properties Studio refused to write back are not a failure of the undo, but the user must
+        // still learn that they were not restored instead of assuming a perfect rollback.
+        undoSkipped: 'Một số thuộc tính không khôi phục được trên bản Studio này:',
+        dismissNotice: 'Đóng thông báo',
         diffEmpty: 'Không có nội dung để diff.',
         linesAdded: 'dòng thêm',
         linesRemoved: 'dòng bớt',

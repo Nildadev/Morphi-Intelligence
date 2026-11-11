@@ -154,9 +154,9 @@ export async function snapshotPreState(
     if (path !== null) {
       const properties = await inspectInstance(mcp, path, signal);
       if (properties !== null) {
-        // A raw `inspect_instance` bag is lossy (pseudo-paths, stringified Vector3/enums, read-only
-        // keys): re-applying it throws on the first bad key, so only round-trippable keys are kept.
-        // See `restorableProperties` for the measured basis.
+        // A raw `inspect_instance` bag is lossy (flattened pseudo-paths, stringified Vector3/enums).
+        // Scalars are kept as candidates and `setInstanceProperties` decides key by key, recording
+        // what this build refuses — see `restorableProperties`.
         const restorable = restorableProperties(properties);
         if (Object.keys(restorable).length === 0) {
           notes.push(`Không có thuộc tính nào của ${path} khôi phục được an toàn.`);

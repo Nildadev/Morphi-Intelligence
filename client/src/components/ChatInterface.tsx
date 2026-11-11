@@ -10,6 +10,7 @@ import { AppShell, DESKTOP_QUERY, useMediaQuery } from './layout/AppShell';
 import { SidePanel } from './layout/SidePanel';
 import { ChildSessionPanel } from './chat/ChildSessionPanel';
 import { HistoryPanel } from './chat/HistoryPanel';
+import { RestoreNotice, undoNoticeOf, type RestoreNoticeData } from './chat/RestoreNotice';
 import { Rail, type RailAction } from './layout/Rail';
 import { SettingsModal, type SettingsTab } from './settings/SettingsModal';
 import { CreateProjectModal } from './CreateProjectModal';
@@ -101,6 +102,11 @@ export const ChatInterface: React.FC = () => {
         { kind: 'child'; title: string; childSessionId: string } | { kind: 'history'; title: string } | null
     >(null);
     const [childDetail, setChildDetail] = useState<SessionDetail | null>(null);
+    /**
+     * Why the last Undo refused or only partly worked, kept in the transcript rather than a toast: a
+     * refusal must be readable after the toast has faded, next to the turn it refers to.
+     */
+    const [restoreNotice, setRestoreNotice] = useState<RestoreNoticeData | null>(null);
     const [childLoading, setChildLoading] = useState(false);
     const [childFailed, setChildFailed] = useState(false);
     /**
@@ -632,25 +638,23 @@ export const ChatInterface: React.FC = () => {
      * summary. This is the workspace half of undo: `handleUndoMessage` reverts the conversation,
      * this restores the scripts the turn wrote.
      *
-     * The toast reports what the server actually did, never a generic "done": a refused turn
-     * (drift), a partial restore and "nothing restorable" are three different outcomes and the
-     * user has to know which one they got.
+     * A refusal (drift) and a partial restore are shown IN the transcript, not only in a toast: a
+     * toast cannot be read back, and "Script đã bị sửa tay sau lượt này" is the only trace of a
+     * restore that deliberately wrote nothing. Success still uses a toast, because it needs no
+     * detail.
      */
-    const handleUndoTurn = async (callIds: string[]) => {        const sessionId = activeSessionIdRef.current ?? currentSessionId;
+    const handleUndoTurn = async (callIds: string[]) => {
+        const sessionId = activeSessionIdRef.current ?? currentSessionId;
         if (!sessionId || callIds.length === 0) return;
         setUndoTurnBusy(callIds);
         try {
             const result = await api.sessions.undoTurn(sessionId, callIds);
-            if (result.drift.length > 0) {
-                showToast('error', vi.chat.undoDrift, vi.chat.undoTurn);
-            } else if (result.restored.length === 0) {
+            const notice = undoNoticeOf(result);
+            setRestoreNotice(notice);
+            if (notice !== null) {
+                showToast('error', notice.title, vi.chat.undoTurn);
+            } else if (result.status === 'refused') {
                 showToast('warning', vi.chat.undoNothing, vi.chat.undoTurn);
-            } else if (result.failed.length > 0) {
-                showToast(
-                    'error',
-                    `${vi.chat.undoPartial} ${result.failed.map((entry) => entry.reason).join('; ')}`,
-                    vi.chat.undoTurn,
-                );
             } else {
                 showToast('success', vi.chat.undoRestored, vi.chat.undoTurn);
             }
@@ -1337,6 +1341,17 @@ export const ChatInterface: React.FC = () => {
                         <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 bottom-0 h-7 bg-gradient-to-t from-bg-main to-transparent" />
                         <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 h-6 bg-gradient-to-b from-bg-main to-transparent" />
                     </div>
+
+                    {/* Why the last Undo refused or only partly worked — in the transcript, not only
+                      * in a toast, because a refusal has to stay readable next to the turn. */}
+                    {restoreNotice !== null ? (
+                        <div className="mx-auto w-full max-w-[730px] shrink-0 px-4">
+                            <RestoreNotice
+                                notice={restoreNotice}
+                                onDismiss={() => setRestoreNotice(null)}
+                            />
+                        </div>
+                    ) : null}
 
                     {/* Composer */}
                     {displayTodos.length > 0 ? (

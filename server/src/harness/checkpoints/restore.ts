@@ -8,6 +8,7 @@ import {
   setInstanceProperties,
   writeScriptSource,
   type InverseStep,
+  type PropertyWriteResult,
 } from './studioWire';
 
 /**
@@ -55,6 +56,18 @@ export interface RestoreResult {
   applied: number;
   /** Entries that failed or could not be verified, with the reason. */
   failed: Array<{ path: string; reason: string }>;
+  /**
+   * Individual properties this Studio build refused to write, in its own words. Not a failure: the
+   * rest of the restore landed and was verified. Surfaced so the user learns that e.g. `BrickColor`
+   * could not be put back instead of believing the whole instance was restored.
+   */
+  skipped: RestoreSkipped[];
+}
+
+export interface RestoreSkipped {
+  path: string;
+  key: string;
+  reason: string;
 }
 
 /** Read the current value of a target, in the same shape the snapshot stored. */
@@ -201,10 +214,11 @@ export async function applyRestore(
   checkpoints.setStatus(checkpointId, 'restoring');
 
   const failed: Array<{ path: string; reason: string }> = [];
+  const skipped: RestoreSkipped[] = [];
   let applied = 0;
 
   for (const step of snapshot.inverse) {
-    const done = await applyStep(mcp, step, signal);
+    const done = await applyStep(mcp, step, signal, skipped);
     if (done === null) {
       applied += 1;
     } else {
@@ -214,11 +228,17 @@ export async function applyRestore(
 
   const status = failed.length === 0 ? 'restored' : 'restore-failed';
   checkpoints.setStatus(checkpointId, status);
-  return { ok: true, result: { checkpointId, status, applied, failed } };
+  return { ok: true, result: { checkpointId, status, applied, failed, skipped } };
 }
 
 /** One inverse step. Returns null on success, or a human-readable failure reason. */
-async function applyStep(mcp: McpGateway, step: InverseStep, signal?: AbortSignal): Promise<string | null> {
+async function applyStep(
+  mcp: McpGateway,
+  step: InverseStep,
+  signal?: AbortSignal,
+  /** Per-property refusals are collected here so the caller can report them without failing. */
+  skipped: RestoreSkipped[] = [],
+): Promise<string | null> {
   if (step.tool === 'script_write') {
     try {
       await writeScriptSource(mcp, step.path, step.source, signal);
@@ -238,18 +258,22 @@ async function applyStep(mcp: McpGateway, step: InverseStep, signal?: AbortSigna
       return error instanceof Error ? error.message : 'Studio không mở công cụ xoá để khôi phục.';
     }
   }
+  let written: PropertyWriteResult;
   try {
-    const applied = await setInstanceProperties(mcp, step.path, step.properties, signal);
-    if (!applied) return 'Studio báo đặt thuộc tính thất bại.';
+    written = await setInstanceProperties(mcp, step.path, step.properties, signal);
   } catch (error) {
     return error instanceof Error ? error.message : 'Studio không mở công cụ đặt thuộc tính để khôi phục.';
   }
-  // Same anti-lie rule as scripts: re-inspect and require the recorded values back.
+  for (const entry of written.skipped) skipped.push({ path: step.path, key: entry.key, reason: entry.reason });
+  // Nothing went in: there is nothing to verify, and the skipped list carries the whole story.
+  if (written.applied.length === 0) return null;
+
+  // Same anti-lie rule as scripts: re-inspect and require the recorded values back. Only the keys the
+  // server claims it assigned are checked — a refused key is reported, not counted as a mismatch.
   const live = await inspectInstance(mcp, step.path, signal);
   if (live === null) return 'Đã đặt thuộc tính nhưng không đọc lại được để xác nhận.';
-  const mismatched = Object.entries(step.properties)
-    .filter(([key, before]) => !sameValue(live[key], before))
-    .map(([key]) => key);
+  const mismatched = written.applied
+    .filter((key) => !sameValue(live[key], step.properties[key]));
   return mismatched.length === 0 ? null : `Thuộc tính đọc lại không khớp bản sao (${mismatched.join(', ')}).`;
 }
 
@@ -271,6 +295,8 @@ export interface TurnRestoreResult {
   restored: string[];
   /** Per-target failures from the checkpoints that were attempted. */
   failed: Array<{ path: string; reason: string }>;
+  /** Individual properties this build refused, with Studio's own message. */
+  skipped: RestoreSkipped[];
   /** Checkpoints in this turn that had no snapshot; `reason` is the server's own sentence. */
   notRestorable: Array<{ checkpointId: string; reason: string }>;
   /** Script paths whose live content no longer matches the snapshot. Non-empty ⇒ nothing written. */
@@ -305,7 +331,7 @@ export async function restoreTurn(
   if (candidates.length === 0) {
     return {
       ok: true,
-      result: { restored: [], failed: [], notRestorable, drift: [], status: 'refused' },
+      result: { restored: [], failed: [], skipped: [], notRestorable, drift: [], status: 'refused' },
     };
   }
   if (!mcp.connected || !mcp.studioLinked) return { ok: false, reason: 'STUDIO_NOT_CONNECTED' };
@@ -324,18 +350,20 @@ export async function restoreTurn(
   if (drift.length > 0) {
     return {
       ok: true,
-      result: { restored: [], failed: [], notRestorable, drift, status: 'refused' },
+      result: { restored: [], failed: [], skipped: [], notRestorable, drift, status: 'refused' },
     };
   }
 
   const restored: string[] = [];
   const failed: TurnRestoreResult['failed'] = [];
+  const skipped: RestoreSkipped[] = [];
   for (const row of candidates) {
     const applied = await applyRestore(mcp, checkpoints, row.id, signal, true);
     if (!applied.ok) {
       failed.push({ path: row.manifest.targets[0] ?? row.id, reason: applied.reason });
       continue;
     }
+    skipped.push(...applied.result.skipped);
     if (applied.result.status === 'restored') restored.push(row.id);
     else failed.push(...applied.result.failed);
   }
@@ -345,6 +373,7 @@ export async function restoreTurn(
     result: {
       restored,
       failed,
+      skipped,
       notRestorable,
       drift: [],
       status: failed.length === 0 ? 'restored' : 'restore-failed',

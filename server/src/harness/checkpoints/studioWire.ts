@@ -278,26 +278,24 @@ function isErrorText(result: unknown): boolean {
 }
 
 /**
- * Which keys of an `inspect_instance` bag can actually be written back.
+ * Which keys of an `inspect_instance` bag are CANDIDATES for a restore.
  *
- * MEASURED on a live `Part`: the bag had 36 keys and only 16 were writable. The serialisation is
- * lossy — `CFrame.Position`/`PivotOffset.Rotation` are flattened pseudo-paths ("not a valid member
+ * MEASURED on a live `Part`: the bag had 36 keys and 20 could not be written back. The serialisation
+ * is lossy — `CFrame.Position`/`PivotOffset.Rotation` are flattened pseudo-paths ("not a valid member
  * of Part"), `Size`/`Color`/`Rotation` arrive as comma-joined strings ("Vector3 expected, got
  * string"), enums arrive as `"Enum.Material.Plastic"`, `BrickColor` arrives as `"Medium stone
  * grey"`, `Capabilities` arrives as `""` but wants a `SecurityCapabilities` object, and `UniqueId`
- * is capability-locked. Re-applying the raw bag threw on the first bad key and failed every
- * property restore.
+ * is capability-locked.
  *
- * Strings are the crux and the reason this filter is blunt: the wire serialises most non-primitive
- * types INTO strings, so a writable string property (`CollisionGroup: "Default"`,
- * `MaterialVariant: ""`) is indistinguishable from a serialised one (`BrickColor: "Medium stone
- * grey"`, `Capabilities: ""`). No value test can separate them: every heuristic tried against the
- * live server (skip `Enum.*`, skip comma-numbers, skip known read-only names) still let one bad key
- * through. So only numbers and booleans are restored — they always round-trip.
+ * A value test can never separate a writable string (`CollisionGroup: "Default"`,
+ * `MaterialVariant: ""`, `StringValue.Value`) from a serialised one (`BrickColor: "Medium stone
+ * grey"`, `Capabilities: ""`) — every heuristic tried against the live server let one bad key
+ * through. So the bag is no longer filtered by type: scalars are kept as CANDIDATES and
+ * `setInstanceProperties` decides key by key, in isolation, recording what it could not apply.
  *
- * That deliberately gives up `CollisionGroup`/`MaterialVariant` rather than risk claiming a property
- * was restored when it was not. A property that survives the filter can still fail for a
- * machine-specific reason, which is why the restore engine re-inspects and verifies after writing.
+ * Only two things are rejected up front, because they can never be property assignments:
+ *  - dotted keys (`CFrame.Position`) — pseudo-paths, not members;
+ *  - non-scalars (objects/arrays) — no literal to emit.
  *
  * Note `Name` is not in the bag at all (it is the top-level `name` field), so renaming is not part of
  * a property restore.
@@ -306,36 +304,85 @@ export function restorableProperties(bag: Record<string, unknown>): Record<strin
   const restorable: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(bag)) {
     if (key.includes('.')) continue;
-    if (typeof value === 'number' || typeof value === 'boolean') restorable[key] = value;
+    const type = typeof value;
+    if (type === 'number' || type === 'boolean' || type === 'string') restorable[key] = value;
   }
   return restorable;
 }
 
+/** Outcome of a property re-apply: what landed, and what this build refuses (with its own reason). */
+export interface PropertyWriteResult {
+  /** Keys the Luau actually assigned. Only these may be verified by the caller. */
+  applied: string[];
+  /** Keys that could not be assigned — `reason` is Studio's own message, never a paraphrase. */
+  skipped: Array<{ key: string; reason: string }>;
+}
+
 /**
- * Re-apply a property bag to an instance. There is no dedicated `set_properties` tool, and the real
- * server rejects arbitrary writes via `execute_luau` only for trusted contexts, so this is best
- * effort: it returns true when the capability ran, false when absent. Callers must re-inspect to
- * verify (the restore engine does that).
+ * Re-apply a property bag to an instance, ONE KEY AT A TIME.
+ *
+ * There is no dedicated `set_properties` tool, so this runs Luau. Each assignment happens inside its
+ * own `pcall`: the bag is lossy (see `restorableProperties`), and an unconditional re-apply threw on
+ * the first unassignable key — `CFrame.Rotation is not a valid member`, `Vector3 expected, got
+ * string`, `Invalid value "Enum.Material.Plastic"`, `cannot write 'UniqueId'` — which failed the whole
+ * restore and, worse, half-applied it with no report.
+ *
+ * Isolating each key means a build-specific refusal costs exactly that key, and the caller is told
+ * which ones in Studio's own words. The report comes back through `HttpService:JSONEncode` so it is
+ * parsed, not scraped out of prose.
  */
 export async function setInstanceProperties(
   mcp: McpGateway,
   path: string,
   properties: Record<string, unknown>,
   signal?: AbortSignal,
-): Promise<boolean> {
+): Promise<PropertyWriteResult> {
   const legacy = await pickTool(mcp, ['studio.set_properties', 'studio.update_properties'] as const, signal);
   if (legacy !== undefined) {
     const result = await mcp.callTool(legacy, { path, properties }, signal);
-    return !isErrorText(result);
+    // A dedicated tool is all-or-nothing: either every key went in or the call failed.
+    if (isErrorText(result)) throw new Error(String(result));
+    return { applied: Object.keys(properties), skipped: [] };
   }
   const tool = await pickTool(mcp, LUAU_CANDIDATES, signal);
   if (tool === undefined) throw new Error('Studio không mở công cụ đặt thuộc tính để khôi phục.');
-  // `inst` must be bound before it is indexed — the previous version emitted `inst[key] = …` against
-  // an undeclared local, so the Luau failed at runtime and every property restore reported failure.
-  const assignments = Object.entries(properties)
-    .map(([key, value]) => `  inst[${JSON.stringify(key)}] = ${JSON.stringify(value)}`)
+
+  // `inst` must be bound before it is indexed — an earlier version emitted `inst[key] = …` against an
+  // undeclared local, so the Luau failed at runtime and every property restore reported failure.
+  const attempts = Object.entries(properties)
+    .map(([key, value]) => `attempt(${JSON.stringify(key)}, ${JSON.stringify(value)})`)
     .join('\n');
-  const code = `${resolveLuau(path)}if root == nil then return "error: not found" end\nlocal inst = root\n${assignments}\nreturn "ok"`;
+  const code = [
+    resolveLuau(path),
+    'local inst = root',
+    'if inst == nil then return "error: not found" end',
+    'local applied, failed = {}, {}',
+    'local function attempt(key, value)',
+    '  local ok, err = pcall(function() inst[key] = value end)',
+    '  if ok then table.insert(applied, key)',
+    '  else table.insert(failed, { key = key, reason = tostring(err) }) end',
+    'end',
+    attempts,
+    'return game:GetService("HttpService"):JSONEncode({ applied = applied, failed = failed })',
+  ].join('\n');
+
   const result = await mcp.callTool(tool, { code, datamodel_type: DATAMODEL }, signal);
-  return !isErrorText(result);
+  const text = typeof result === 'string' ? result : '';
+  if (isErrorText(result)) throw new Error(text || 'Studio báo lỗi khi đặt thuộc tính.');
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    // Unparsable means the report cannot be trusted: say so instead of assuming every key landed.
+    throw new Error('Studio không trả về kết quả đọc được khi đặt thuộc tính.');
+  }
+  const record = (parsed ?? {}) as { applied?: unknown; failed?: unknown };
+  const applied = Array.isArray(record.applied) ? record.applied.filter((key): key is string => typeof key === 'string') : [];
+  const skipped = Array.isArray(record.failed)
+    ? record.failed
+      .filter((entry): entry is { key: unknown; reason?: unknown } => entry !== null && typeof entry === 'object')
+      .map((entry) => ({ key: String((entry as { key?: unknown }).key ?? ''), reason: String((entry as { reason?: unknown }).reason ?? '') }))
+    : [];
+  return { applied, skipped };
 }
