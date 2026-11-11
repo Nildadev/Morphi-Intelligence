@@ -299,14 +299,29 @@ measured by that MIT-licensed project and is ported here:
 - **`x-client-version`** follows the live web bundle (`appVersion:"…"` in `static/main.<hash>.js`,
   read with the session cookies because the home page is behind the AWS WAF), cached 6 h with a
   hand-seen fallback.
-- v1 scope: text + thinking streaming, no tool calling (the web API has none; the reference project
-  injects tools via a system prompt and parses them out of the text — a separate follow-up).
-  `supportsTools: false`, models `deepseek-web` / `deepseek-web-expert` (expert = DeepThink),
-  128k context, prompt budget ~75k tokens keeping the tail plus the system line.
+- **Tool calling over text** (ported in `deepseekWebTools.ts`, ~1.6k lines, from the same
+  reference): `supportsTools: true` on both models. The tool catalogue goes into the system prompt
+  (`buildToolsSystemPrompt`, compact JSON with arg types so the model emits real arrays); the answer
+  stream is routed through `StreamingToolCallRouter`, which spots the call marker with a sliding
+  window, holds the candidate until the call is complete (4096-char soft cap, 256k hard cap), parses
+  it in any of the dialects DeepSeek actually emits (fenced `\`\`\`tool_call`, the bare complete-tag
+  form, `<tool_call name="…">`, Anthropic-style `<invoke>` incl. the fullwidth-bar DSML prefix,
+  MiMo XML, invented `{"tool_call":…}` envelopes), repairs broken JSON, and never lets the raw
+  protocol reach the client. A transcript guard cuts the model "playing out" the conversation
+  (`\nUser:` / `\nAssistant:` echoes, the `[Tool result id=…]` placeholder, echoed call ids) and
+  stops the upstream; markers inside ``` blocks are ignored. The prompt is `Role: text` shaped
+  (`User: …` / `Assistant: …`, open `Assistant:` turn) so the guard matches exactly what the model
+  sees; the char budget is derived from a 75k-token cap measured per conversation (CJK costs ~2.7×
+  the tokens per character that latin does). `parseToolCallsFromText` drops text before the marker
+  by design — in the stream that text was already emitted while the buffer was still pending.
+- v1 scope: text + thinking streaming. Models `deepseek-web` / `deepseek-web-expert` (expert =
+  DeepThink), 128k context.
 
-Verification: 16 unit tests over an injected `fetch` + injected PoW solver (never touches the
-network); registry priority and the env key wired; client card renders generically with the DeepSeek
-mark. A live sign-in round-trip is still untested — the credential capture is manual by design.
+Verification: 34 unit tests over an injected `fetch` + injected PoW solver (never touches the
+network), incl. the router's split-marker hold, false-positive release, transcript cut and the
+parser's dialect set; registry priority and the env key wired; client card renders generically with
+the DeepSeek mark. A live sign-in round-trip is still untested — the credential capture is manual by
+design.
 
 ## Post-Phase-2 notes (live verified)
 

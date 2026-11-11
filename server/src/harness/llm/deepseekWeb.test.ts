@@ -110,7 +110,7 @@ describe('buildDeepSeekPrompt', () => {
             { role: 'user', content: 'Tiếp' },
         ];
         expect(buildDeepSeekPrompt(messages)).toBe(
-            '[System]\nBạn là trợ lý.\n\n[User]\nChào\n\n[Assistant]\nHi\n\n[Tool result call_1]\nkết quả\n\n[User]\nTiếp',
+            'System: Bạn là trợ lý.\n\nAlways answer in the same language as the latest user message. Never switch language unless the user explicitly asks.\n\nUser: Chào\n\nAssistant: Hi\n\n[Tool result id=call_1]\nkết quả\n\nUser: Tiếp\n\nAssistant:',
         );
     });
 
@@ -121,8 +121,8 @@ describe('buildDeepSeekPrompt', () => {
             { role: 'user', content: 'câu hỏi cuối' },
         ];
         const prompt = buildDeepSeekPrompt(big);
-        expect(prompt.length).toBeLessThanOrEqual(300_000 + 2100);
-        expect(prompt).toContain('[System]\nSYS');
+        expect(prompt.length).toBeLessThanOrEqual(305_000);
+        expect(prompt).toContain('System: SYS');
         expect(prompt).toContain('câu hỏi cuối');
         expect(prompt).not.toContain('u0 ');
     });
@@ -196,7 +196,34 @@ describe('DeepSeekWebAdapter.stream', () => {
         expect(pow).toMatchObject({ algorithm: 'DeepSeekHashV1', challenge: 'c1', salt: 's1', answer: SOLVED.answer, target_path: '/api/v0/chat/completion' });
         const body = JSON.parse(String(completion!.init?.body)) as Record<string, unknown>;
         expect(body).toMatchObject({ chat_session_id: 'sess_1', model_type: 'default', thinking_enabled: false, parent_message_id: null });
-        expect(String(body.prompt)).toContain('[User]\nXin chào');
+        expect(String(body.prompt)).toContain('User: Xin chào');
+    });
+
+    it('routes a tool call printed into the answer and finishes with tool_calls', async () => {
+        const fetchImpl = fakeFetch({
+            stream: [
+                { p: 'response/content', o: 'APPEND', v: 'Để tôi kiểm tra. ' },
+                { p: 'response/content', o: 'APPEND', v: '```tool_call\n{"name":"studio.read_' },
+                { p: 'response/content', o: 'APPEND', v: 'file","arguments":{"target_file":"Main.lua"}}\n```' },
+            ],
+        });
+        const events = await collect(
+            adapter(fetchImpl).stream(
+                request({
+                    tools: [{ name: 'studio.read_file', description: 'Read a script', parameters: { type: 'object', properties: {} } }],
+                }),
+            ),
+        );
+        const texts = events.filter((e) => e.type === 'text_delta').map((e) => (e as { text: string }).text).join('');
+        expect(texts).toBe('Để tôi kiểm tra. ');
+        expect(events).toContainEqual({ type: 'tool_call_start', callId: expect.any(String), name: 'studio.read_file' });
+        expect(events).toContainEqual({ type: 'tool_call_end', callId: expect.any(String), name: 'studio.read_file', args: { target_file: 'Main.lua' } });
+        expect(events.at(-1)).toMatchObject({ type: 'finish', reason: 'tool_calls' });
+        // The raw protocol never reaches the client.
+        expect(texts).not.toContain('tool_call');
+        // The tools protocol is part of the prompt when tools are present.
+        const body = JSON.parse(String(fetchImpl.calls.find((call) => call.url.includes('chat/completion'))!.init?.body)) as Record<string, unknown>;
+        expect(String(body.prompt)).toContain('# Tool usage protocol (MANDATORY)');
     });
 
     it('maps the expert model to thinking_enabled', async () => {
@@ -268,6 +295,6 @@ describe('DeepSeekWebAdapter.stream', () => {
         bare.setApiKey(JSON.stringify(AUTH));
         const models = await bare.listModels();
         expect(models.map((model) => model.id)).toEqual(['deepseek-web', 'deepseek-web-expert']);
-        expect(models.every((model) => model.supportsTools === false)).toBe(true);
+        expect(models.every((model) => model.supportsTools === true)).toBe(true);
     });
 });

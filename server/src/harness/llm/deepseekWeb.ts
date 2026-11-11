@@ -1,3 +1,5 @@
+import { buildToolsSystemPrompt, StreamingToolCallRouter, type ToolCallChunk } from './deepseekWebTools';
+import type { ToolSchema } from './types';
 import type { LlmMessage, LlmRequest, ModelInfo, ProviderAdapter, StreamEvent } from './types';
 
 /**
@@ -37,16 +39,20 @@ const STOP_STREAM_PATH = '/api/v0/chat/stop_stream';
 const DEFAULT_WASM_URL = 'https://fe-static.deepseek.com/chat/static/sha3_wasm_bg.7b9ca65ddd.wasm';
 /** Last version seen by hand in the reference project; used until the live bundle is read. */
 const FALLBACK_APP_VERSION = '2.7.0';
-/** ~75k tokens at ~4 chars/token — the reference project's budget for the 128k window. */
-const MAX_PROMPT_CHARS = 300_000;
+/** ~75k tokens — the reference project's budget for the 128k window. Converted to characters per
+ *  conversation, because CJK text costs several times the tokens per character that latin does. */
+const MAX_PROMPT_TOKENS = 75_000;
+/** Web models drift to English without this; prepended when no tools prompt takes the slot. */
+const LANGUAGE_GUARD =
+  "Always answer in the same language as the latest user message. Never switch language unless the user explicitly asks.";
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36';
 
 export const DEEPSEEK_WEB_PROVIDER_ID = 'deepseek-web';
 
 const MODELS: ModelInfo[] = [
-  { id: 'deepseek-web', name: 'DeepSeek Web', provider: DEEPSEEK_WEB_PROVIDER_ID, providerLabel: 'DeepSeek Web', context: 131_072, supportsTools: false },
+  { id: 'deepseek-web', name: 'DeepSeek Web', provider: DEEPSEEK_WEB_PROVIDER_ID, providerLabel: 'DeepSeek Web', context: 131_072, supportsTools: true },
   // `expert` is the web client's stronger mode; it maps to `thinking_enabled: true` on the wire.
-  { id: 'deepseek-web-expert', name: 'DeepSeek Web Expert (DeepThink)', provider: DEEPSEEK_WEB_PROVIDER_ID, providerLabel: 'DeepSeek Web', context: 131_072, supportsTools: false },
+  { id: 'deepseek-web-expert', name: 'DeepSeek Web Expert (DeepThink)', provider: DEEPSEEK_WEB_PROVIDER_ID, providerLabel: 'DeepSeek Web', context: 131_072, supportsTools: true },
 ];
 
 /** What a signed-in browser session gives us: the Bearer and the cookie jar. */
@@ -119,34 +125,101 @@ export function parseDeepSeekCredential(raw: string | undefined): DeepSeekAuth |
 }
 
 /**
- * Flatten the transcript into the single `prompt` string the web API takes. Role-labelled lines keep
- * the loop's multi-turn shape readable to the model; tool results are labelled too (v1 sends no tool
- * schemas, but the loop still replays past tool results as history).
+ * Flatten the transcript into the single `prompt` string the web API takes, in the `Role: text`
+ * shape the reference project uses — the transcript guard in `deepseekWebTools` matches exactly
+ * these labels, so the model echoing `\nUser:` gets cut instead of reaching the chat.
  *
- * The cap keeps the TAIL (the newest turns carry the intent); the system message survives the cut
- * because dropping it changes the persona, not just the history.
+ * Tool results are rendered with the same `[Tool result id=…]` placeholder the guard looks for;
+ * assistant tool calls are replayed as one JSON line per call so the model sees what it did.
+ *
+ * The cap keeps the TAIL (the newest turns carry the intent) and is computed in characters from a
+ * token budget: BPE gives ~4 chars/token for latin but ~1.5 for CJK, so a fixed char ceiling either
+ * wastes the window or overruns it ("Content is too long"). The system line is outside the cap —
+ * dropping it changes the persona, not just the history.
  */
-export function buildDeepSeekPrompt(messages: readonly LlmMessage[]): string {
+export function buildDeepSeekPrompt(messages: readonly LlmMessage[], tools: readonly ToolSchema[] = []): string {
   const render = (message: LlmMessage): string => {
-    if (message.role === 'system') return `[System]\n${message.content}`;
-    if (message.role === 'user') return `[User]\n${message.content}`;
-    if (message.role === 'tool') return `[Tool result${message.toolCallId ? ` ${message.toolCallId}` : ''}]\n${message.content}`;
-    return `[Assistant]\n${message.content}`;
+    if (message.role === 'tool') {
+      return `[Tool result id=${message.toolCallId ?? 'unknown'}]\n${message.content}`;
+    }
+    const label = message.role === 'assistant' ? 'Assistant' : 'User';
+    const calls = (message.toolCalls ?? [])
+      .map((call) => `[tool_call] {"name":${JSON.stringify(call.name)},"arguments":${JSON.stringify(call.args ?? {})}}`)
+      .join('\n');
+    const content = message.content.trim();
+    return calls === '' ? `${label}: ${content}` : `${label}: ${content}${content === '' ? '' : '\n'}${calls}`;
   };
-  const rendered = messages.map(render);
-  const total = rendered.join('\n\n').length;
-  if (total <= MAX_PROMPT_CHARS) return rendered.join('\n\n');
 
-  // Keep the system line plus as many trailing messages as fit.
-  const kept: string[] = rendered[0] !== undefined && messages[0]?.role === 'system' ? [rendered[0]] : [];
-  let used = kept[0]?.length ?? 0;
-  for (let index = rendered.length - 1; index >= (messages[0]?.role === 'system' ? 1 : 0); index -= 1) {
-    const length = rendered[index]!.length + 2;
-    if (used + length > MAX_PROMPT_CHARS) break;
-    kept.splice(messages[0]?.role === 'system' ? 1 : 0, 0, rendered[index]!);
-    used += length;
+  const systems: string[] = [];
+  const parts: string[] = [];
+  for (const message of messages) {
+    if (message.role === 'system') {
+      const content = message.content.trim();
+      if (content !== '') systems.push(content);
+      continue;
+    }
+    const rendered = render(message);
+    if (rendered.trim() !== '') parts.push(rendered);
   }
-  return kept.join('\n\n');
+  // The tools protocol takes the system slot when tools are present; the language guard only
+  // matters when there is nothing stronger to say first.
+  systems.push(tools.length > 0 ? buildToolsSystemPrompt(tools) : LANGUAGE_GUARD);
+
+  const maxChars = charBudgetForTokens(messages, MAX_PROMPT_TOKENS);
+  const kept = keepNewest(parts, maxChars, { reserved: '\n\nAssistant:'.length, join: 2 });
+  kept.unshift(`System: ${systems.join('\n\n')}`);
+  return [...kept, 'Assistant:'].join('\n\n');
+}
+
+/** Rough but honest token count: `length / 4` badly underestimates non-latin text. */
+function estimateTokens(text: string): number {
+  let ascii = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) < 128) ascii += 1;
+  }
+  return Math.ceil(ascii / 4 + (text.length - ascii) / 1.5);
+}
+
+/**
+ * Characters that fit into `maxTokens` for THIS conversation: the exchange rate between characters
+ * and tokens is a property of the text, so it is measured rather than assumed.
+ */
+function charBudgetForTokens(messages: readonly LlmMessage[], maxTokens: number): number {
+  let chars = 0;
+  let tokens = 0;
+  for (const message of messages) {
+    if (message.role === 'system') continue;
+    chars += message.content.length;
+    tokens += estimateTokens(message.content);
+  }
+  // Nothing to measure yet — assume latin, the cheaper of the two.
+  if (tokens === 0) return maxTokens * 4;
+  return Math.floor(maxTokens * (chars / tokens));
+}
+
+/** Drops the oldest turns until the prompt fits; truncates a lone huge turn. */
+function keepNewest(
+  parts: readonly string[],
+  maxChars: number,
+  frame: { reserved: number; join: number },
+): string[] {
+  const kept: string[] = [];
+  let total = frame.reserved;
+
+  for (let i = parts.length - 1; i >= 0; i -= 1) {
+    const addition = (parts[i]?.length ?? 0) + (kept.length > 0 ? frame.join : 0);
+    if (total + addition > maxChars) {
+      if (kept.length === 0) {
+        const available = Math.max(128, maxChars - total);
+        kept.unshift((parts[i] ?? '').slice(-available));
+      }
+      break;
+    }
+    kept.unshift(parts[i] ?? '');
+    total += addition;
+  }
+
+  return kept;
 }
 
 /** Standard `data:` lines of an SSE body, decoded incrementally. */
@@ -585,8 +658,13 @@ export class DeepSeekWebAdapter implements ProviderAdapter {
         yield { type: 'finish', reason: 'cancelled' };
         return;
       }
-      const prompt = buildDeepSeekPrompt(request.messages);
+      const prompt = buildDeepSeekPrompt(request.messages, request.tools);
       const modelType = request.model === 'deepseek-web-expert' ? 'expert' : 'default';
+      // The web API has no tool channel: when tools are present the router watches the text for the
+      // protocol the system prompt asked for, and the raw markers never reach the client.
+      const router = new StreamingToolCallRouter(request.tools.length > 0);
+      let sawToolCall = false;
+      let stoppedUpstream = false;
 
       const session = await this.requestJson(CREATE_SESSION_PATH, auth, {}, request.signal, fetchImpl);
       sessionId = session.data?.biz_data?.id ?? session.data?.biz_data?.chat_session?.id;
@@ -638,7 +716,17 @@ export class DeepSeekWebAdapter implements ProviderAdapter {
         const delta = extractDelta(parsed, cache, state);
         if (delta.messageId !== null) messageId = delta.messageId;
         if (delta.thinking !== '') yield { type: 'reasoning_delta', text: delta.thinking };
-        if (delta.text !== '') yield { type: 'text_delta', text: delta.text };
+        if (delta.text === '') continue;
+        for (const chunk of router.route(delta.text)) {
+          yield* mapToolCallChunk(chunk);
+          if (chunk.type === 'tool_call') sawToolCall = true;
+        }
+        // The router saw the model playing out the transcript — a fabricated next turn. Stop the
+        // upstream so it stops burning tokens; the rest of the answer is already discarded.
+        if (router.cut && !stoppedUpstream) {
+          stoppedUpstream = true;
+          await this.stopStream(auth, sessionId, messageId, fetchImpl).catch(() => undefined);
+        }
       }
       if (request.signal.aborted) {
         // The loop above breaks on abort before the fetch body notices, so the same server-side
@@ -647,7 +735,11 @@ export class DeepSeekWebAdapter implements ProviderAdapter {
         yield { type: 'finish', reason: 'cancelled' };
         return;
       }
-      yield { type: 'finish', reason: 'stop' };
+      for (const chunk of router.finish()) {
+        yield* mapToolCallChunk(chunk);
+        if (chunk.type === 'tool_call') sawToolCall = true;
+      }
+      yield { type: 'finish', reason: sawToolCall ? 'tool_calls' : 'stop' };
     } catch (error) {
       if (request.signal.aborted || isAbortError(error)) {
         // A plain disconnect leaves the message "wip" and the session refuses the next request, so
@@ -664,6 +756,9 @@ export class DeepSeekWebAdapter implements ProviderAdapter {
       yield { type: 'finish', reason: 'error' };
     }
   }
+
+  /** Maps a routed chunk onto the stream events the loop understands. */
+  // Placed as a free function below the class instead — see mapToolCallChunk.
 
   /** `chat/stop_stream` — best-effort; failures are swallowed by the callers. */
   private async stopStream(auth: DeepSeekAuth, sessionId: string, messageId: number | undefined, fetchImpl: typeof fetch): Promise<void> {
@@ -760,4 +855,23 @@ export class DeepSeekWebAdapter implements ProviderAdapter {
       ...(auth.token === undefined ? {} : { Authorization: `Bearer ${auth.token}` }),
     };
   }
+}
+
+/** Maps a routed chunk onto the stream events the loop understands. */
+function* mapToolCallChunk(chunk: ToolCallChunk): Generator<StreamEvent> {
+  if (chunk.type === 'text') {
+    if (chunk.content !== '') yield { type: 'text_delta', text: chunk.content };
+    return;
+  }
+  yield { type: 'tool_call_start', callId: chunk.callId, name: chunk.name };
+  yield { type: 'tool_call_delta', callId: chunk.callId, argsDelta: chunk.argumentsPart };
+  // Unparsable argument JSON still reaches the tool loop as an empty object — the loop's
+  // validation reports the missing parameters back to the model, which can retry.
+  let args: unknown = {};
+  try {
+    args = JSON.parse(chunk.argumentsPart) as unknown;
+  } catch {
+    /* keep {} */
+  }
+  yield { type: 'tool_call_end', callId: chunk.callId, name: chunk.name, args };
 }
