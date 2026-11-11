@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
+import { cn } from '../src/utils';
 
 /**
  * Typography-scale enforcement, ported from ZCode's `DESIGN.md` "UI font tokens".
@@ -134,6 +135,27 @@ describe('typography scale — declared where Tailwind can see it', () => {
         // follow the knob down and reintroduce the zoom.
         expect(THEME).toMatch(/--text-mobile-input-safe\s*:\s*16px/);
         expect(THEME).not.toMatch(/--text-mobile-input-safe\s*:\s*calc\(/);
+    });
+
+    it('makes cn() survive a colour collision for EVERY declared level', () => {
+        // `utils.ts` registers a prefix-based font-size group in tailwind-merge. This is the
+        // cross-check that prefix cannot drift away from `@theme`: derive the class names from
+        // the REAL stylesheet, then prove each one reaches the DOM alongside a text colour.
+        // Without this, adding a `text-ui-*` level to @theme but forgetting the merge config
+        // silently renders that new level at the inherited 15px body size — the exact bug
+        // behind the oversized "Hoàn tất" labels.
+        // `--text-…-line-height` entries are line-height modifiers, not standalone classes.
+        // `name.slice(2)` would drop the leading `--` and give `text-text-ui-xs`; the token
+        // name is `--text-ui-xs`, so strip the full `--text-` prefix instead.
+        const levels = declaredScale()
+            .filter((name) => !name.endsWith('--line-height'))
+            .map((name) => `text-${name.replace(/^--text-/, '')}`)
+            .concat('text-mobile-input-safe');
+        expect(levels.length).toBeGreaterThan(5);
+        for (const level of levels) {
+            expect(cn(level, 'text-success-text'), `${level} must survive cn()`).toContain(level);
+            expect(cn('text-success-text', level), `${level} must survive cn() in reverse`).toContain(level);
+        }
     });
 
     it('never implements scaling by mutating the root font size', () => {

@@ -51,8 +51,12 @@ function ScriptRow({ change }: { change: ScriptChange }) {
       </span>
       <span className="shrink-0 font-mono text-ui-xs font-semibold tabular-nums text-success-text">+{change.added}</span>
       <span className="shrink-0 font-mono text-ui-xs font-semibold tabular-nums text-danger-text">−{change.removed}</span>
+      {/* Same size as the churn numbers on this row (`text-ui-xs`), but a lighter weight: the
+          numbers are the outcome, the status word is only a qualifier. `text-ui-2xs` is reserved
+          for workflow-axis labels (DESIGN.md), never content. Both classes go through `cn()`, so
+          its custom font-size group must keep them alongside `STATUS_CLASS` — see utils.ts. */}
       {change.status !== undefined ? (
-        <span className={cn('shrink-0 text-ui-2xs font-semibold', STATUS_CLASS[change.status])}>
+        <span className={cn('shrink-0 text-ui-xs font-medium', STATUS_CLASS[change.status])}>
           {statusLabel(change.status)}
         </span>
       ) : null}

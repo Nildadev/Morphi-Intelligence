@@ -56,8 +56,15 @@ describe('TurnWorkSummary', () => {
         expect(within(rows[0]!).getByText('+3')).toBeInTheDocument();
         expect(within(rows[1]!).getByText('+4')).toBeInTheDocument();
         expect(within(rows[1]!).getByText('−1')).toBeInTheDocument();
-        // The known status is shown next to the path.
-        expect(within(rows[0]!).getByText('Hoàn tất')).toBeInTheDocument();
+        // The known status is shown next to the path — as quiet content, not a loud badge:
+        // `cn()` must keep BOTH the custom `text-ui-xs` size and the success colour (a
+        // tailwind-merge regression that once dropped the size and left the label at 15px).
+        const status = within(rows[0]!).getByText('Hoàn tất');
+        expect(status).toBeInTheDocument();
+        expect(status.className).toContain('text-ui-xs');
+        expect(status.className).toContain('text-success-text');
+        expect(status.className).toContain('font-medium');
+        expect(status.className).not.toContain('text-ui-2xs');
     });
 
     it('never renders diff rows — the summary is a table of contents, not a diff viewer', () => {
