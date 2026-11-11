@@ -69,6 +69,3 @@ server/better-sqlite3-*.tgz
 tsc_errors.txt
 tsc_errors_utf8.txt
 
-# DeepSeek Web live-test credentials and browser profile (secrets — never commit)
-server/.deepseek-auth.json
-server/.deepseek-browser-profile/

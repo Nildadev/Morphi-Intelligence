@@ -11,7 +11,6 @@ import { createFakeAdapter, FAKE_PROVIDER_ID, FAKE_SCRIPTS, FAKE_TOOL_NAME, type
 import { LlmRegistry } from './harness/llm/registry';
 import { createProviderSettingsStore } from './harness/llm/settings';
 import { OpenAICompatibleAdapter } from './harness/llm/openaiCompatible';
-import { DeepSeekWebAdapter } from './harness/llm/deepseekWeb';
 import { MCP_SETTINGS_ID, createMcpGateway, createMcpLog } from './harness/mcp/serviceGateway';
 import { McpService } from './services/McpService';
 import { mountRoutes } from './routes';
@@ -78,11 +77,6 @@ const registry = fakeMode
       // optional; its two model ids carry no metadata on the wire, hence the hand-written cards
       // in `providerCatalog.ts`. `thinking` (not an effort ladder) enables DeepThink reasoning.
       new OpenAICompatibleAdapter({ id: 'deepseek-chat', name: 'DeepSeek Chat', baseUrl: 'http://127.0.0.1:8000/v1' }),
-      // DeepSeek WEB: speaks chat.deepseek.com's own protocol (session + PoW + SSE patch stream),
-      // studied from github.com/AppsGanin/ai-free-vscode. The credential is the signed-in browser
-      // session as JSON {"token","cookieHeader"} — no local Python bridge needed. Text + thinking
-      // only (the web API has no tool calling); the bridge above stays for tool-capable setups.
-      new DeepSeekWebAdapter(),
     ], config.autoPriority);
 
 const envKeys: Record<string, string> = {};
@@ -105,8 +99,6 @@ for (const [providerId, value] of Object.entries({
   // Optional only: the bridge authenticates with the browser session it manages itself, so the
   // provider is usable with no credential at all (registry KEYLESS_PROVIDER_IDS).
   'deepseek-chat': process.env.DEEPSEEK_CHAT_API_KEY,
-  // The web session travels as one JSON string (token + cookie jar); see deepseekWeb.ts.
-  'deepseek-web': process.env.DEEPSEEK_WEB_AUTH,
 })) {
   if (value) envKeys[providerId] = value;
 }

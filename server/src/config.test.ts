@@ -19,7 +19,7 @@ describe('loadConfig', () => {
   it('defaults auto priority to the built-in lineup without proxypal', () => {
     const config = loadConfig({ APPDATA: 'C:/data' });
     expect(config.autoPriority).toEqual([
-      'google', 'openai', 'anthropic', 'openrouter', 'deepseek', 'deepseek-chat', 'deepseek-web', 'groq', 'mistral', 'xai', 'cerebras', 'together', 'fireworks', 'perplexity', 'deepinfra', 'nvidia', 'kilo', 'custom',
+      'google', 'openai', 'anthropic', 'openrouter', 'deepseek', 'deepseek-chat', 'groq', 'mistral', 'xai', 'cerebras', 'together', 'fireworks', 'perplexity', 'deepinfra', 'nvidia', 'kilo', 'custom',
     ]);
   });
 });

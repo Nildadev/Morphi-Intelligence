@@ -25,7 +25,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig 
     clientDistPath: path.join(__dirname, '../../client/dist'),
     isDev: !electron,
     titleModel: env.MORPHI_TITLE_MODEL || settings.titleModel || 'auto',
-    autoPriority: settings.autoPriority || ['google', 'openai', 'anthropic', 'openrouter', 'deepseek', 'deepseek-chat', 'deepseek-web', 'groq', 'mistral', 'xai', 'cerebras', 'together', 'fireworks', 'perplexity', 'deepinfra', 'nvidia', 'kilo', 'custom'],
+    autoPriority: settings.autoPriority || ['google', 'openai', 'anthropic', 'openrouter', 'deepseek', 'deepseek-chat', 'groq', 'mistral', 'xai', 'cerebras', 'together', 'fireworks', 'perplexity', 'deepinfra', 'nvidia', 'kilo', 'custom'],
     compaction: {
       pruneAt: settings.compaction?.pruneAt ?? 0.7,
       summarizeAt: settings.compaction?.summarizeAt ?? 0.85,

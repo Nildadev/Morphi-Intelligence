@@ -48,10 +48,8 @@ const LOCAL_LOGO_BY_PROVIDER: Record<string, string> = {
     nvidia: nvidiaLogo,
     kilo: kiloLogo,
     // The local DeepSeek bridge reuses the same DeepSeek mark — one brand, two endpoints
-    // (nvidia api.deepseek.com vs the user's own 127.0.0.1:8000). `deepseek-web` is the same brand
-    // again, speaking chat.deepseek.com directly.
+    // (nvidia api.deepseek.com vs the user's own 127.0.0.1:8000).
     'deepseek-chat': deepseekLogo,
-    'deepseek-web': deepseekLogo,
 };
 
 export function ProviderLogo({ provider, name, size = 26 }: ProviderLogoProps) {
