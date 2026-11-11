@@ -13,6 +13,8 @@ export const vi = {
         chat: 'Trò chuyện',
         projects: 'Dự án',
         memory: 'Bộ nhớ',
+        // Git-like history (Phase 4): the Studio checkpoint browser in the "Thêm" menu.
+        history: 'Lịch sử thay đổi',
         studio: 'Studio',
         settings: 'Cài đặt',
         newChat: 'Cuộc trò chuyện mới',
@@ -598,6 +600,28 @@ export const vi = {
         // sure?…") ngay trong một UI 100% tiếng Việt (§6.6.2 "một bảng màu, một ngôn ngữ").
         deleteProject: 'Xoá dự án',
         deleteProjectBody: 'Toàn bộ lịch sử hội thoại của dự án này sẽ bị xoá. Không thể hoàn tác.',
+    },
+
+    // Git-like history (Phase 4): the Studio checkpoints of one session.
+    history: {
+        title: 'Lịch sử thay đổi Studio',
+        empty: 'Chưa có thay đổi nào được ghi cho phiên này.',
+        loading: 'Đang tải lịch sử…',
+        loadError: 'Không tải được lịch sử thay đổi.',
+        previewError: 'Không xem trước được kế hoạch khôi phục.',
+        restoreError: 'Không khôi phục được.',
+        restore: 'Khôi phục',
+        previewTitle: 'Kế hoạch khôi phục',
+        confirmRestore: 'Khôi phục ngay',
+        cancel: 'Huỷ',
+        restoring: 'Đang khôi phục…',
+        restored: 'Đã khôi phục và xác nhận lại nội dung.',
+        restoreFailed: 'Khôi phục thất bại:',
+        drift: 'Nơi làm việc đã thay đổi so với bản sao — không ghi đè:',
+        statusRecorded: 'Đã ghi',
+        statusRestoring: 'Đang khôi phục',
+        statusRestored: 'Đã khôi phục',
+        statusFailed: 'Lỗi khôi phục',
     },
 } as const;
 

@@ -198,8 +198,7 @@ export interface SessionDetail extends SessionSummary {
 // Approvals — server/src/harness/tools/approval.ts, server/src/routes/approvals.ts
 // ---------------------------------------------------------------------------
 
-export type ApprovalRisk = 'low' | 'medium' | 'high';
-export type ApprovalDecision = 'allow' | 'deny' | 'expired';
+export type ApprovalRisk = 'low' | 'medium' | 'high';export type ApprovalDecision = 'allow' | 'deny' | 'expired';
 export type ApprovalScope = 'once' | 'session';
 
 /**
@@ -552,4 +551,72 @@ export interface Project {
   description?: string;
   createdAt: number;
   lastActive: number;
+}
+
+// ---------------------------------------------------------------------------
+// Git-like history — server/src/harness/checkpoints/{store,snapshot,restore}.ts
+// ---------------------------------------------------------------------------
+
+/** One script whose source the snapshot holds, or one inserted instance. */
+export type CheckpointSnapshotEntry =
+  | { kind: 'script'; path: string; source: string }
+  | { kind: 'properties'; path: string; properties: Record<string, unknown> }
+  | { kind: 'inserted'; path: string };
+
+export type CheckpointInverseStep =
+  | { tool: 'script_write'; path: string; source: string }
+  | { tool: 'set_properties'; path: string; properties: Record<string, unknown> }
+  | { tool: 'delete_instance'; path: string };
+
+export interface CheckpointPreState {
+  entries: CheckpointSnapshotEntry[];
+  inverse: CheckpointInverseStep[];
+  notes: string[];
+}
+
+export interface CheckpointManifest {
+  tool: string;
+  callId: string;
+  argsHash: string;
+  targets: string[];
+  outcome: 'ok' | 'error' | 'cancelled' | 'denied';
+  /** `null` when no pre-state could be read — the checkpoint is then audit-only. */
+  preState: CheckpointPreState | null;
+  restorable: boolean;
+  /** Shown verbatim; names the real limitation when `restorable` is false. */
+  restoreReason: string;
+}
+
+export type CheckpointStatus = 'recorded' | 'restoring' | 'restored' | 'restore-failed';
+
+export interface WorkspaceCheckpoint {
+  id: string;
+  sessionId: string;
+  createdAt: number;
+  label: string | null;
+  baseEventSeq: number | null;
+  rootHash: string;
+  manifest: CheckpointManifest;
+  status: CheckpointStatus;
+}
+
+export interface RestoreStepPlan {
+  path: string;
+  action: 'restore-script' | 'restore-properties' | 'delete-inserted';
+  summary: string;
+}
+
+export interface RestorePreview {
+  checkpointId: string;
+  clean: boolean;
+  steps: RestoreStepPlan[];
+  drift: string[];
+  notes: string[];
+}
+
+export interface RestoreResult {
+  checkpointId: string;
+  status: 'restored' | 'restore-failed';
+  applied: number;
+  failed: Array<{ path: string; reason: string }>;
 }

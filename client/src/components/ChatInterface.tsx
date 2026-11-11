@@ -9,6 +9,7 @@ import { SearchPalette } from './layout/SearchPalette';
 import { AppShell, DESKTOP_QUERY, useMediaQuery } from './layout/AppShell';
 import { SidePanel } from './layout/SidePanel';
 import { ChildSessionPanel } from './chat/ChildSessionPanel';
+import { HistoryPanel } from './chat/HistoryPanel';
 import { Rail, type RailAction } from './layout/Rail';
 import { SettingsModal, type SettingsTab } from './settings/SettingsModal';
 import { CreateProjectModal } from './CreateProjectModal';
@@ -94,7 +95,9 @@ export const ChatInterface: React.FC = () => {
      * Docked right-hand panel for a subagent child session. Opening it must NOT touch the main
      * pane: the parent transcript keeps its scroll, its live draft and its running stream.
      */
-    const [sidePanel, setSidePanel] = useState<{ title: string; childSessionId: string } | null>(null);
+    const [sidePanel, setSidePanel] = useState<
+        { kind: 'child'; title: string; childSessionId: string } | { kind: 'history'; title: string } | null
+    >(null);
     const [childDetail, setChildDetail] = useState<SessionDetail | null>(null);
     const [childLoading, setChildLoading] = useState(false);
     const [childFailed, setChildFailed] = useState(false);
@@ -488,13 +491,14 @@ export const ChatInterface: React.FC = () => {
     const handleOpenChildSession = useCallback((childSessionId: string) => {
         const child = subagentTree.find((entry) => entry.childSessionId === childSessionId);
         setSidePanel({
+            kind: 'child',
             title: child?.task ?? child?.memberName ?? vi.chat.subagentTitle,
             childSessionId,
         });
     }, [subagentTree]);
 
     useEffect(() => {
-        if (sidePanel === null) {
+        if (sidePanel === null || sidePanel.kind !== 'child') {
             setChildDetail(null);
             setChildFailed(false);
             return undefined;
@@ -940,6 +944,15 @@ export const ChatInterface: React.FC = () => {
             case 'memory':
                 openSettings('memory');
                 break;
+            // Git-like history (Phase 4): the Studio checkpoints of the OPEN session, in the same
+            // docked panel the subagent uses. A session must exist — the list is per-session.
+            case 'history':
+                if (currentSessionId == null) {
+                    openSettings('general');
+                    break;
+                }
+                setSidePanel({ kind: 'history', title: vi.history.title });
+                break;
             case 'settings':
                 openSettings('general');
                 break;
@@ -1367,11 +1380,15 @@ export const ChatInterface: React.FC = () => {
                             title={sidePanel.title}
                             onClose={() => setSidePanel(null)}
                         >
-                            <ChildSessionPanel
-                                detail={childDetail}
-                                loading={childLoading}
-                                failed={childFailed}
-                            />
+                            {sidePanel.kind === 'history' && currentSessionId != null ? (
+                                <HistoryPanel sessionId={currentSessionId} busy={streaming || starting} />
+                            ) : sidePanel.kind === 'child' ? (
+                                <ChildSessionPanel
+                                    detail={childDetail}
+                                    loading={childLoading}
+                                    failed={childFailed}
+                                />
+                            ) : null}
                         </SidePanel>
                     ) : null}
                 </div>

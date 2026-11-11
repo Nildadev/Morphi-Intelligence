@@ -78,14 +78,18 @@ export function PromptRail({ items }: PromptRailProps) {
         <nav
             aria-label={vi.chat.promptRailLabel}
             data-testid="prompt-rail"
-            className="pointer-events-none sticky top-1/2 z-20 -ml-4 hidden h-0 w-4 -translate-y-1/2 sm:-ml-6 lg:block"
+            // Sits OUTSIDE the transcript's content column: the parent is the 730px column, and the
+            // rail is anchored to its left edge with `right-full`, so it never overlaps text and
+            // never eats a text-indent. `top-1/2` + `-translate-y-1/2` keeps it centred while the
+            // column scrolls.
+            className="pointer-events-none absolute right-full top-1/2 z-20 hidden -translate-y-1/2 pr-3 lg:block"
         >
-            <ul className="pointer-events-auto absolute left-0 top-0 flex w-4 -translate-y-1/2 flex-col items-start gap-2 py-1">
+            <ul className="pointer-events-auto flex w-4 flex-col items-end gap-2">
                 {items.map((item, index) => {
                     const isActive = index === active;
                     const distance = hovered === null ? null : Math.abs(index - hovered);
                     return (
-                        <li key={item.id} className="relative flex h-2 w-4 items-center">
+                        <li key={item.id} className="relative flex h-2 w-4 items-center justify-end">
                             <button
                                 type="button"
                                 aria-label={vi.chat.promptRailJumpTo.replace('{index}', String(index + 1))}
@@ -97,12 +101,12 @@ export function PromptRail({ items }: PromptRailProps) {
                                 onFocus={() => setHovered(index)}
                                 onBlur={() => setHovered(null)}
                                 onClick={() => jump(item.id)}
-                                className="flex h-2 w-4 items-center rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                                className="flex h-2 w-4 items-center justify-end rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                             >
                                 <span
                                     aria-hidden="true"
                                     className={cn(
-                                        'block h-0.5 origin-left rounded-full transition-transform',
+                                        'block h-0.5 origin-right rounded-full transition-transform',
                                         isActive ? 'w-4 bg-text-secondary' : 'w-2 bg-border',
                                         distance === 0 ? 'scale-y-150' : distance === 1 ? 'scale-y-125' : '',
                                     )}
@@ -113,13 +117,13 @@ export function PromptRail({ items }: PromptRailProps) {
                                 <div
                                     role="tooltip"
                                     data-testid={`prompt-rail-tooltip-${index}`}
-                                    className="pointer-events-none absolute left-full top-1/2 z-30 ml-2 w-72 -translate-y-1/2 rounded-lg border border-border bg-bg-card p-3 text-left shadow-premium"
+                                    className="pointer-events-none absolute right-full top-1/2 z-30 mr-2 w-72 -translate-y-1/2 rounded-lg border border-border bg-bg-card p-3 text-left shadow-premium"
                                 >
-                                    <p className="line-clamp-2 text-ui-base font-medium leading-5 text-text-primary">
+                                    <p className="line-clamp-2 text-ui-sm font-medium leading-5 text-text-primary">
                                         {promptPreview(item.prompt)}
                                     </p>
                                     {item.reply !== '' ? (
-                                        <p className="mt-1.5 line-clamp-3 text-ui-sm leading-5 text-text-secondary">
+                                        <p className="mt-1.5 line-clamp-3 text-ui-xs leading-5 text-text-secondary">
                                             {promptPreview(item.reply)}
                                         </p>
                                     ) : null}

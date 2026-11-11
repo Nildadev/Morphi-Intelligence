@@ -5,6 +5,7 @@ import { loadConfig } from './config';
 import { createApp } from './app';
 import { openDatabase } from './db/connection';
 import { createHarness } from './harness/harness';
+import type { JsonSchema } from './harness/shared/types';
 import { GeminiAdapter } from './harness/llm/gemini';
 import { createFakeAdapter, FAKE_PROVIDER_ID, FAKE_SCRIPTS, FAKE_TOOL_NAME, type FakeScript } from './harness/llm/fake';
 import { LlmRegistry } from './harness/llm/registry';
@@ -159,6 +160,42 @@ if (fakeMode) {
     approval: 'auto',
     presentation: { label: 'E2E edit script', risk: 'low' },
   });
+
+  // The rest of the `/script alltool` tour. Each is the smallest tool that produces a distinct
+  // transcript row shape (read, search, shell, write, multi-edit, failure), so the whole log can be
+  // inspected in one turn. Names are the real ones where the client maps an icon by name.
+  const tourTool = (
+    name: string,
+    label: string,
+    properties: Record<string, JsonSchema>,
+    required: string[],
+    execute: (args: Record<string, unknown>) => unknown,
+    risk: 'low' | 'medium' = 'low',
+  ) => harness.tools.register({
+    name,
+    description: `E2E-only tool for the alltool design tour: ${label}.`,
+    parameters: { type: 'object', properties, required, additionalProperties: true },
+    async execute(args: unknown): Promise<unknown> {
+      return execute((args ?? {}) as Record<string, unknown>);
+    },
+    isConcurrencySafe: true,
+    approval: 'auto',
+    presentation: { label, risk },
+  });
+
+  tourTool('studio.script_read', 'Đọc script', { path: { type: 'string' } }, ['path'],
+    (args) => ({ path: args.path ?? '', source: '-- nội dung giả lập\nreturn {}' }));
+  tourTool('studio.search_game_tree', 'Tìm trong cây', { query: { type: 'string' } }, ['query'],
+    (args) => ({ query: args.query ?? '', matches: ['Workspace.Dummy.Humanoid', 'Workspace.NPC.Humanoid'] }));
+  tourTool('run_command', 'Chạy lệnh', { cmd: { type: 'string' } }, ['cmd'],
+    (args) => ({ exitCode: 0, stdout: `$ ${String(args.cmd ?? '')}\n0 problems found` }));
+  tourTool('studio.write_script', 'Ghi script',
+    { path: { type: 'string' }, source: { type: 'string' } }, ['path', 'source'],
+    (args) => ({ ok: true, path: args.path ?? '', bytes: String(args.source ?? '').length }), 'medium');
+  tourTool('studio.multi_edit', 'Sửa nhiều script', { edits: { type: 'array' } }, ['edits'],
+    (args) => ({ ok: true, edited: Array.isArray(args.edits) ? args.edits.length : 0 }), 'medium');
+  tourTool('studio.execute_luau', 'Chạy mã Luau', { code: { type: 'string' } }, ['code'],
+    () => { throw new Error('boom: lỗi giả lập cho tour thiết kế'); }, 'medium');
 }
 
 for (const setting of providerSettings.list()) {

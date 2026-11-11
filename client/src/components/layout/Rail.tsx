@@ -4,6 +4,7 @@ import {
     Check,
     Clock,
     Folder,
+    History,
     Home,
     MoreHorizontal,
     Plus,
@@ -15,7 +16,7 @@ import { vi } from '../../i18n/vi';
 import { cn, plainTitle } from '../../utils';
 
 /** Every rail control maps to a real destination/action in ChatInterface — no placeholder views. */
-export type RailAction = 'newChat' | 'search' | 'projects' | 'memory' | 'settings';
+export type RailAction = 'newChat' | 'search' | 'projects' | 'memory' | 'history' | 'settings';
 
 interface RailProps {
     onAction: (action: RailAction) => void;
@@ -40,6 +41,8 @@ const homeAction = () => ({ id: 'newChat' as const, label: vi.nav.newChat, icon:
 function moreActions(): Array<{ id: RailAction; label: string; icon: typeof Home }> {
     return [
         { id: 'memory', label: vi.nav.memory, icon: Brain },
+        // Git-like history (Phase 4): Studio checkpoints for the open session.
+        { id: 'history', label: vi.nav.history, icon: History },
         { id: 'settings', label: vi.nav.settings, icon: Settings },
     ];
 }

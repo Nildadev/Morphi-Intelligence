@@ -20,6 +20,8 @@ import type {
   ProviderConnectResult,
   ProviderBridgeStatus,
   ProviderStatus,
+  RestorePreview,
+  RestoreResult,
   SessionDeleteResult,
   SessionDetail,
   SessionPinResult,
@@ -32,6 +34,7 @@ import type {
   SubagentTreeEntry,
   ToolMetadata,
   ToolToggleResult,
+  WorkspaceCheckpoint,
 } from '../types';
 import { getToken } from './token';
 import { createSSEParser } from './sse';
@@ -396,6 +399,19 @@ export const api = {
     /** Copies the effective log prefix into a new visible checkout session (redo/branch). */
     branch: (id: string, toSeq?: number): Promise<SessionDetail> =>
       post<SessionDetail>(`/sessions/${segment(id)}/branch`, toSeq === undefined ? {} : { toSeq }),
+    /**
+     * Git-like history (Phase 4): the Studio checkpoints recorded for this session, newest first.
+     * Each row says whether its change can be undone and why not, so the UI never offers a dead
+     * restore button.
+     */
+    checkpoints: (id: string): Promise<WorkspaceCheckpoint[]> =>
+      get<WorkspaceCheckpoint[]>(`/sessions/${segment(id)}/checkpoints`),
+    /** Read-only preview: re-reads the live place to report drift before anything is written. */
+    previewRestore: (id: string, checkpointId: string): Promise<RestorePreview> =>
+      get<RestorePreview>(`/sessions/${segment(id)}/checkpoints/${segment(checkpointId)}/restore`),
+    /** Applies the inverse plan; the server answers `restore-failed` rather than lying. */
+    restore: (id: string, checkpointId: string): Promise<RestoreResult> =>
+      post<RestoreResult>(`/sessions/${segment(id)}/checkpoints/${segment(checkpointId)}/restore`, {}),
     /** The goal is a durable event, not a session column: the loop reads it back off the log. */
     setGoal: (id: string, objective: string): Promise<GoalSetResult> =>
       post<GoalSetResult>(`/sessions/${segment(id)}/goal`, { objective }),

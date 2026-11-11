@@ -14,6 +14,8 @@ const PINNED_LITERALS = {
     search: 'Tìm kiếm',
     projects: 'Dự án',
     memory: 'Bộ nhớ',
+    // Git-like history (Phase 4) added this row to the "Thêm" menu.
+    history: 'Lịch sử thay đổi',
     settings: 'Cài đặt',
     more: 'Thêm',
     today: 'Hôm nay',
@@ -125,10 +127,14 @@ describe('AppShell layout', () => {
         fireEvent.click(trigger);
 
         const memory = screen.getByRole('menuitem', { name: PINNED_LITERALS.memory });
+        const history = screen.getByRole('menuitem', { name: PINNED_LITERALS.history });
         const settings = screen.getByRole('menuitem', { name: PINNED_LITERALS.settings });
         expect(memory).toHaveFocus();
 
         fireEvent.keyDown(memory, { key: 'ArrowDown' });
+        expect(history).toHaveFocus();
+
+        fireEvent.keyDown(history, { key: 'ArrowDown' });
         expect(settings).toHaveFocus();
 
         fireEvent.keyDown(settings, { key: 'ArrowDown' });

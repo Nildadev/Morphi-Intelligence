@@ -37,6 +37,8 @@ import {
     Globe as GlobeGlyph,
     HardDrive as HardDriveGlyph,
     HelpCircleIcon as HelpCircleGlyph,
+    // Git-like history (Phase 4): the Studio checkpoint browser.
+    History as HistoryGlyph,
     Home as HomeGlyph,
     Hourglass as HourglassGlyph,
     Image as ImageGlyph,
@@ -128,6 +130,7 @@ export const ChevronRight = icon(ChevronRightGlyph);
 export const Circle = icon(CircleGlyph);
 export const CircleAlert = icon(CircleAlertGlyph);
 export const Clock = icon(ClockGlyph);
+export const History = icon(HistoryGlyph);
 export const Cloud = icon(CloudGlyph);
 export const Code2 = icon(CodeGlyph);
 export const Copy = icon(CopyGlyph);

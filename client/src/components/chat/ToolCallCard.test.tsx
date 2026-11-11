@@ -18,12 +18,16 @@ const call = (overrides: Partial<DerivedToolCall> = {}): DerivedToolCall => ({
 describe('ToolCallCard', () => {
     it.each([
         ['running', 'Đang chạy'],
-        ['done', 'Hoàn tất'],
         ['error', 'Lỗi'],
         ['cancelled', 'Đã huỷ'],
     ] as const)('renders the %s status as its Vietnamese label', (status, label) => {
         render(<ToolCallCard call={call({ status })} />);
         expect(screen.getByText(label)).toBeInTheDocument();
+    });
+
+    it('says nothing on a settled row: "Hoàn tất" on every call was noise', () => {
+        render(<ToolCallCard call={call({ status: 'done' })} />);
+        expect(screen.queryByText('Hoàn tất')).toBeNull();
     });
 
     it('maps the tool name to a Vietnamese label and keeps the raw name in monospace', () => {
@@ -117,7 +121,8 @@ describe('ToolCallCard', () => {
             expect(screen.getByText('ReplicatedStorage/Config')).toBeInTheDocument();
             expect(screen.getByText('+4')).toBeInTheDocument();
             expect(screen.getByText('−1')).toBeInTheDocument();
-            expect(screen.getByText('Hoàn tất')).toBeInTheDocument();
+            // A settled edit shows no status word (see the done-row test above).
+            expect(screen.queryByText('Hoàn tất')).toBeNull();
         });
 
         it('starts collapsed with no diff rows, then expands into the hunks', () => {

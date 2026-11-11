@@ -179,7 +179,9 @@ describe('MessageItem', () => {
         fireEvent.click(header);
 
         expect(screen.getByText('Tìm object')).toBeInTheDocument();
-        expect(screen.getByText('Hoàn tất')).toBeInTheDocument();
+        // A settled call deliberately shows no status word: "Hoàn tất" on every row was noise the
+        // user asked to remove. Only a running/failed call earns a label.
+        expect(screen.queryByText('Hoàn tất')).toBeNull();
     });
 
     it('keeps thinking as its own collapsible inside the worked block, not merged with the tools', () => {
@@ -429,8 +431,10 @@ describe('MessageItem', () => {
         expect(container.querySelectorAll('[data-diff-kind]').length).toBeGreaterThan(0);
     });
 
-    it('renders a runtime delivery as a subtle notice row, never a user bubble', () => {
-        render(
+    it('drops a runtime delivery entirely instead of printing a notice row', () => {
+        // The centred "Subagent xong: …" line read as a fake user turn; the subagent row itself
+        // already carries the outcome, so the delivery renders nothing at all.
+        const { container } = render(
             <MessageItem
                 message={{
                     ...userMessage('Background subagent sess_abc finished [status: done]. Đã xong phần việc.'),
@@ -439,16 +443,15 @@ describe('MessageItem', () => {
             />,
         );
 
-        const note = screen.getByRole('note');
-        expect(note).toHaveTextContent('Subagent xong: Đã xong phần việc.');
-        expect(note.querySelector('.items-end')).toBeNull();
+        expect(screen.queryByRole('note')).toBeNull();
+        expect(container.textContent).toBe('');
         expect(screen.queryByText(/Background subagent/)).toBeNull();
     });
 
-    it('renders a legacy steer delivery with the runtime prefix as a notice too', () => {
+    it('drops a legacy steer delivery with the runtime prefix too', () => {
         // Rows written before `source: 'notice'` existed carry `steer`; the machine prefix must still
-        // keep them out of the user bubble on old sessions.
-        render(
+        // keep them out of the transcript on old sessions.
+        const { container } = render(
             <MessageItem
                 message={{
                     ...userMessage('Background job job_9 (workflow: Kiểm thử) finished [status: completed].'),
@@ -457,7 +460,8 @@ describe('MessageItem', () => {
             />,
         );
 
-        expect(screen.getByRole('note')).toHaveTextContent('Tác vụ nền đã xong · workflow: Kiểm thử');
+        expect(screen.queryByRole('note')).toBeNull();
+        expect(container.textContent).toBe('');
         expect(screen.queryByText(/Background job/)).toBeNull();
     });
 
@@ -484,13 +488,10 @@ describe('MessageItem', () => {
         const text = container.textContent ?? '';
         // M1: `indexOf(a) < indexOf(b)` đúng một cách rỗng khi CẢ HAI chuỗi đều thiếu (-1 < -1 sai,
         // nhưng -1 < 5 thì đúng) → test xanh cả khi component không render gì. Chốt hiện diện trước.
-        const at = (needle: string): number => {
-            expect(text).toContain(needle);
-            return text.indexOf(needle);
-        };
-        // Collapsed by default: header summary visible, tool body only after expanding.
-        expect(at('Mở đầu')).toBeLessThan(at('Yêu cầu phê duyệt'));
-        fireEvent.click(screen.getAllByRole('button', { expanded: false })[0]);
-        expect(screen.getByText('Đọc tệp')).toBeInTheDocument();
+        expect(text).toContain('Mở đầu');
+        // An approval step is NOT painted in the transcript any more: the decision is asked in the
+        // modal, and a settled copy in the log was noise. Only the text step survives here.
+        expect(screen.queryByText('Yêu cầu phê duyệt')).toBeNull();
+        expect(screen.queryByText('Đã từ chối')).toBeNull();
     });
 });

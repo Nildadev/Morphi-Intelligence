@@ -99,17 +99,17 @@ function EditCallCard({ call }: { call: DerivedToolCall }) {
                 disabled={!expandable}
                 onClick={() => setExpanded((value) => !value)}
                 className={cn(
-                    'group flex h-7 w-full min-w-0 items-center gap-2 text-left text-ui-base transition-colors',
+                    'group flex h-7 w-full min-w-0 items-center gap-2 text-left text-ui-sm transition-colors',
                     expandable ? 'cursor-pointer' : 'cursor-default',
                 )}
             >
                 <span className="flex h-4 w-4 shrink-0 items-center justify-center text-text-tertiary">
                     <Icon aria-hidden="true" size={14} />
                 </span>
-                <span className="shrink-0 text-ui-base font-semibold text-text-primary">{toolLabel(call.name, call.label)}</span>
+                <span className="shrink-0 text-ui-sm font-semibold text-text-primary">{toolLabel(call.name, call.label)}</span>
                 {paths.length > 0 ? (
                     <span
-                        className="min-w-0 flex-1 truncate font-mono text-ui-sm text-text-tertiary transition-colors group-hover:text-text-secondary"
+                        className="min-w-0 flex-1 truncate font-mono text-ui-sm text-text-tertiary"
                         title={paths.join('\n')}
                     >
                         {paths.join(' · ')}
@@ -127,18 +127,12 @@ function EditCallCard({ call }: { call: DerivedToolCall }) {
                         </span>
                     </>
                 ) : null}
-                <span className={cn('shrink-0 text-ui-sm font-semibold', STATUS_CLASS[call.status])}>
-                    {statusLabel(call.status)}
-                </span>
-                {expandable ? (
-                    <ChevronRight
-                        aria-hidden="true"
-                        size={14}
-                        className={cn(
-                            'shrink-0 text-text-tertiary transition-transform group-hover:text-text-secondary',
-                            expanded && 'rotate-90',
-                        )}
-                    />
+                {/* A settled call says nothing: "Hoàn tất" on every row is noise the user asked to
+                  * remove. Only a non-terminal state (running) or a failure earns a word. */}
+                {call.status !== 'done' ? (
+                    <span className={cn('shrink-0 text-ui-sm font-semibold', STATUS_CLASS[call.status])}>
+                        {statusLabel(call.status)}
+                    </span>
                 ) : null}
             </button>
 
@@ -185,6 +179,8 @@ interface CardShellProps {
     statusLabel: string;
     statusClass: string;
     failed?: boolean;
+    /** Hide the status word for a settled call (the user does not want "Hoàn tất" on every row). */
+    settled?: boolean;
     /** Permission gates are the one surface allowed to draw a card (see DESIGN.md). */
     gate?: boolean;
     children: ReactNode;
@@ -196,8 +192,11 @@ interface CardShellProps {
  * log lines on the page, not cards. Expanding reveals args/result inside a left-bordered quote
  * block. The approval variant (`gate`) is the single exception: a permission gate may keep a
  * subtle border because it is a decision surface, not a tool log line.
+ *
+ * No hover styling on the row itself: a transcript is read, not navigated, and a background tint
+ * under every hover made a dense log flicker. The chevron is the only affordance.
  */
-function CardShell({ icon, title, subtitle, argument, activity, statusLabel, statusClass, failed = false, gate = false, children }: CardShellProps) {
+function CardShell({ icon, title, subtitle, argument, activity, statusLabel, statusClass, failed = false, settled = false, gate = false, children }: CardShellProps) {
     const [expanded, setExpanded] = useState(false);
 
     return (
@@ -213,19 +212,19 @@ function CardShell({ icon, title, subtitle, argument, activity, statusLabel, sta
                 aria-expanded={expanded}
                 onClick={() => setExpanded(value => !value)}
                 className={cn(
-                    'group flex h-7 w-full min-w-0 items-center gap-2 text-left text-ui-base transition-colors',
+                    'flex h-7 w-full min-w-0 items-center gap-2 text-left text-ui-sm',
                     gate && 'px-2',
                 )}
             >
                 <span className="flex h-4 w-4 shrink-0 items-center justify-center text-text-tertiary">
                     {icon}
                 </span>
-                <span className="shrink-0 text-ui-base font-semibold text-text-primary">{title}</span>
+                <span className="shrink-0 text-ui-sm font-semibold text-text-primary">{title}</span>
                 {/* Detail order is deliberate: the primary argument distinguishes two calls of
                     the same tool, then the raw tool name stays greppable, then live progress. */}
                 {argument !== undefined ? (
                     <span
-                        className="min-w-0 max-w-[45%] shrink truncate font-mono text-ui-sm text-text-tertiary transition-colors group-hover:text-text-secondary"
+                        className="min-w-0 max-w-[45%] shrink truncate font-mono text-ui-sm text-text-tertiary"
                         title={argument}
                     >
                         {argument}
@@ -235,20 +234,19 @@ function CardShell({ icon, title, subtitle, argument, activity, statusLabel, sta
                     <span className="shrink-0 font-mono text-ui-sm text-text-tertiary">{subtitle}</span>
                 ) : null}
                 {activity !== undefined ? (
-                    <span className="min-w-0 flex-1 truncate font-mono text-ui-sm text-text-tertiary transition-colors group-hover:text-text-secondary">
+                    <span className="min-w-0 flex-1 truncate font-mono text-ui-sm text-text-tertiary">
                         {activity}
                     </span>
                 ) : (
                     <span className="min-w-0 flex-1" />
                 )}
-                <span className={cn('shrink-0 text-ui-sm font-semibold', statusClass)}>{statusLabel}</span>
+                {!settled ? (
+                    <span className={cn('shrink-0 text-ui-sm font-semibold', statusClass)}>{statusLabel}</span>
+                ) : null}
                 <ChevronRight
                     aria-hidden="true"
                     size={14}
-                    className={cn(
-                        'shrink-0 text-text-tertiary transition-transform group-hover:text-text-secondary',
-                        expanded && 'rotate-90',
-                    )}
+                    className={cn('shrink-0 text-text-tertiary transition-transform', expanded && 'rotate-90')}
                 />
             </button>
 
@@ -329,6 +327,7 @@ export function ToolCallCard({ call, approval, progress }: ToolCallCardProps) {
             statusLabel={statusLabel(call.status)}
             statusClass={STATUS_CLASS[call.status]}
             failed={call.status === 'error'}
+            settled={call.status === 'done'}
         >
             <JsonBlock label={vi.chat.args} value={call.args} />
             {call.result !== undefined && <JsonBlock label={vi.chat.result} value={call.result} />}

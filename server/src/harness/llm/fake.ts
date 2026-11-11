@@ -22,6 +22,10 @@ export const FAKE_SCRIPTS = [
   // Workspace-change demo: calls a fake `studio.edit_script` so the turn-work summary
   // ("N tệp thay đổi +A −D") can be exercised end-to-end without a Roblox Studio connection.
   'studio-edit',
+  // Design tour: one turn that calls every row shape the transcript can render (read, search,
+  // command, edit, create, multi-edit, failure), so the whole log styling can be inspected in a
+  // single screen without a Roblox Studio connection.
+  'alltool',
 ] as const;
 export type FakeScript = (typeof FAKE_SCRIPTS)[number];
 
@@ -161,6 +165,47 @@ async function* fakeStream(request: LlmRequest, fallback: FakeScript, slowDelay:
 
   if (script === 'studio-edit') {
     yield { type: 'text_delta', text: 'Đã cập nhật Combat.lua và Config.lua.' };
+    yield { type: 'finish', reason: 'stop' };
+    return;
+  }
+
+  // Design tour: one round of every row shape. Each call has its own id, so the turn only moves on
+  // once ALL of them have come back — otherwise the second round would re-issue the first call.
+  if (script === 'alltool') {
+    const tour: Array<{ id: string; name: string; args: Record<string, unknown> }> = [
+      // Read: the plainest row (icon + label + path + no status once settled).
+      { id: 'fake_all_read', name: 'studio.script_read', args: { path: 'src/ServerScriptService/Combat.lua' } },
+      // Search: a query instead of a path, so the argument-summary branch is exercised.
+      { id: 'fake_all_search', name: 'studio.search_game_tree', args: { query: 'Humanoid' } },
+      // A shell-style tool: proves the `cmd` summary key renders and truncates.
+      { id: 'fake_all_cmd', name: 'run_command', args: { cmd: 'selene src/ServerScriptService/Combat.lua' } },
+      // Write: a brand-new script, so the churn is all additions.
+      { id: 'fake_all_write', name: 'studio.write_script', args: { path: 'src/ServerScriptService/Round.lua', source: 'local Round = {}\n\nfunction Round.start()\nend\n\nreturn Round' } },
+      // Edit: before/after on an existing script, so a diff has both + and − rows.
+      { id: 'fake_all_edit', name: 'studio.edit_script', args: { path: 'src/ReplicatedStorage/Config.lua', old: 'return {}\n', source: 'return {\n  speed = 16,\n  jump = 50,\n}\n' } },
+      // Multi-edit: two files in one call, so the per-script sections render.
+      { id: 'fake_all_multi', name: 'studio.multi_edit', args: { edits: [
+        { path: 'src/ServerScriptService/A.lua', old: '', source: 'return 1' },
+        { path: 'src/ServerScriptService/B.lua', old: '', source: 'return 2\n' },
+      ] } },
+      // A call that fails, so the error status + red row are visible next to the successes.
+      { id: 'fake_all_fail', name: 'studio.execute_luau', args: { code: 'error("boom")' }, fail: true },
+    ] as Array<{ id: string; name: string; args: Record<string, unknown>; fail?: boolean }>;
+
+    const pending = tour.find((entry) => !answered.has(entry.id));
+    if (pending !== undefined) {
+      // Issue ONE call per round. The loop then returns a tool result and asks again; issuing all
+      // seven in a single round would exceed the per-step cap and hide the later rows.
+      yield { type: 'tool_call_start', callId: pending.id, name: pending.name };
+      if (signal.aborted) return;
+      yield { type: 'tool_call_delta', callId: pending.id, argsDelta: JSON.stringify(pending.args) };
+      if (signal.aborted) return;
+      yield { type: 'tool_call_end', callId: pending.id, name: pending.name, args: pending.args };
+      yield { type: 'finish', reason: 'tool_calls' };
+      return;
+    }
+
+    yield { type: 'text_delta', text: 'Đã chạy xong lượt thử mọi loại tool: đọc, tìm, lệnh, ghi, sửa, sửa nhiều tệp và một lỗi.' };
     yield { type: 'finish', reason: 'stop' };
     return;
   }

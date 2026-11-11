@@ -51,33 +51,6 @@ function TimelineText({ text }: { text: string }) {
     );
 }
 
-/**
- * Runtime deliveries arrive as English model-facing text (`Background subagent … finished […]`).
- * The transcript is Vietnamese, so known prefixes are rewritten into a short notice; unknown
- * content falls through verbatim rather than inventing copy.
- */
-function noticeText(content: string): string {
-    const subagent = /^Background subagent \S+ finished \[status: (\w+)\]\.?\s*([\s\S]*)$/.exec(content);
-    if (subagent) {
-        const label = subagent[1] === 'done'
-            ? vi.chat.subagentDone
-            : subagent[1] === 'cancelled'
-                ? vi.chat.subagentCancelled
-                : vi.chat.subagentFailed;
-        const summary = subagent[2]?.trim();
-        return summary ? `${label}: ${summary}` : label;
-    }
-    const job = /^Background job \S+ \(([^)]*)\) finished \[status: (\w+)\]\.?\s*([\s\S]*)$/.exec(content);
-    if (job) {
-        const label = job[2] === 'completed'
-            ? vi.chat.jobDone
-            : job[2] === 'killed'
-                ? vi.chat.jobStopped
-                : vi.chat.jobFailed;
-        return `${label}${job[1] ? ` · ${job[1]}` : ''}`;
-    }
-    return content;
-}
 
 /**
  * `source: 'notice'` is the canonical flag, but rows persisted before it existed were recorded as
@@ -107,14 +80,11 @@ export function MessageItem({ message, toolProgress, isStreaming = false, onRege
     };
 
     if (message.role === 'user' && isRuntimeNotice(message)) {
-        return (
-            <div role="note" className="flex w-full items-start justify-center gap-2 py-1">
-                <span aria-hidden="true" className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-text-tertiary" />
-                <p className="max-w-[85%] text-center text-[12px] leading-5 text-text-tertiary" title={message.content}>
-                    {noticeText(message.content)}
-                </p>
-            </div>
-        );
+        // Runtime deliveries (a background subagent/job finishing) are not conversation. They used
+        // to print a centred "Subagent xong: <summary>" line in the transcript, which read as a
+        // fake user turn. The outcome is already visible on the subagent row itself, so the notice
+        // is dropped rather than reworded.
+        return null;
     }
 
     if (message.role === 'user') {
@@ -270,12 +240,10 @@ export function MessageItem({ message, toolProgress, isStreaming = false, onRege
                     if (step.type === 'call') {
                         return null;
                     }
-                    return (
-                        <ToolCallCard
-                            key={`approval-${step.approval.approvalId}`}
-                            approval={step.approval}
-                        />
-                    );
+                    // An approval step is NOT rendered in the transcript: the decision is asked in
+                    // the modal (`ApprovalModal`), and a second, already-settled copy of the same
+                    // request in the log is noise the user asked to remove.
+                    return null;
                 })}
             </div>
 
