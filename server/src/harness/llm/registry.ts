@@ -6,7 +6,7 @@ export interface ProviderConfig {
   enabled?: boolean;
 }
 
-const DEFAULT_PRIORITY = ['google', 'openai', 'anthropic', 'openrouter', 'deepseek', 'deepseek-chat', 'groq', 'mistral', 'xai', 'cerebras', 'together', 'fireworks', 'perplexity', 'deepinfra', 'nvidia', 'kilo', 'custom'];
+const DEFAULT_PRIORITY = ['google', 'openai', 'anthropic', 'openrouter', 'deepseek', 'deepseek-chat', 'deepseek-web', 'groq', 'mistral', 'xai', 'cerebras', 'together', 'fireworks', 'perplexity', 'deepinfra', 'nvidia', 'kilo', 'custom'];
 
 /** Ids removed from the lineup: a vaulted key or stored config must not resurrect their card. */
 const RETIRED_PROVIDER_IDS = new Set(['proxypal']);

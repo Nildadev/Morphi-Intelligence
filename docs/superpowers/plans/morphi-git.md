@@ -276,6 +276,38 @@ BrickColor. `setInstanceProperties` still isolates every key in its own `pcall` 
 - `client tsc --noEmit` clean; `client vitest` **631 passed**.
 - `Place1` verified CLEAN after every live run (no leftover probe scripts/instances).
 
+## DeepSeek Web provider (studied from AppsGanin/ai-free-vscode)
+
+`server/src/harness/llm/deepseekWeb.ts` speaks chat.deepseek.com's own protocol directly — no local
+Python bridge needed (`deepseek-chat` on 127.0.0.1:8000 stays for tool-capable setups). The wire was
+measured by that MIT-licensed project and is ported here:
+
+- **Credential** = the signed-in browser session as JSON `{"token","cookieHeader"}` (Bearer captured
+  from the first successful `/api/v0/` call + the cookie jar; `ds_session_id` is the one that
+  matters). Paste it in Settings' key field for the `deepseek-web` card, or set
+  `DEEPSEEK_WEB_AUTH`. Cookies alone answer 40002; the adapter maps 40002/40003 to `AUTH_EXPIRED`.
+- **Per request**: `chat_session/create` → `create_pow_challenge` → solve `DeepSeekHashV1` with
+  DeepSeek's own sha3 WASM (ported wasm-bindgen glue, cached) → `chat/completion` with the answer
+  base64-encoded in `X-DS-PoW-Response` → SSE patch stream. A fresh session per request because
+  Morphi owns the transcript.
+- **The patch stream** (`extractDelta`): `{p,o,v}` APPENDs with bare `{v}` tails that inherit the
+  previous channel, THINK/RESPONSE fragments registered by an opening snapshot and addressed by
+  index (negative = from the end), `BATCH` wrappers, and full snapshots diffed per path. Getting the
+  fragment registration wrong leaks the reasoning into the answer — pinned by tests.
+- **Cancel must call `chat/stop_stream`**: a plain disconnect leaves the message "wip" and the
+  session refuses the next request. Done both on abort and on in-stream biz errors.
+- **`x-client-version`** follows the live web bundle (`appVersion:"…"` in `static/main.<hash>.js`,
+  read with the session cookies because the home page is behind the AWS WAF), cached 6 h with a
+  hand-seen fallback.
+- v1 scope: text + thinking streaming, no tool calling (the web API has none; the reference project
+  injects tools via a system prompt and parses them out of the text — a separate follow-up).
+  `supportsTools: false`, models `deepseek-web` / `deepseek-web-expert` (expert = DeepThink),
+  128k context, prompt budget ~75k tokens keeping the tail plus the system line.
+
+Verification: 16 unit tests over an injected `fetch` + injected PoW solver (never touches the
+network); registry priority and the env key wired; client card renders generically with the DeepSeek
+mark. A live sign-in round-trip is still untested — the credential capture is manual by design.
+
 ## Post-Phase-2 notes (live verified)
 
 - `resolveAuto` breaks context-window ties by model generation, so `auto` no longer picks a retired generation the key can no longer call (Google still lists `gemini-2.5-flash` for keys that answer 404 "no longer available to new users"); pinned in `registry.test.ts`.
