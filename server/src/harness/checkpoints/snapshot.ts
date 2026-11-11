@@ -1,4 +1,23 @@
 import type { McpGateway } from '../tools/types';
+import {
+  inspectInstance,
+  readScriptSource,
+  restorableProperties,
+  type SnapshotEntry,
+  type InverseStep,
+} from './studioWire';
+
+export type { SnapshotEntry, InverseStep };
+
+/** The restored state of a target before the mutation ran. */
+export interface PreStateSnapshot {
+  entries: SnapshotEntry[];
+  /** Tools whose inverse is known for every target. Empty means "not restorable". */
+  inverse: InverseStep[];
+  /** Why a target could not be snapshotted, when some could not. */
+  notes: string[];
+}
+
 
 /**
  * Pre-mutation snapshot — Phase 3 of `docs/superpowers/plans/morphi-git.md`.
@@ -8,12 +27,12 @@ import type { McpGateway } from '../tools/types';
  * checkpoint may only claim `restorable: true` when this module produced a snapshot whose restore
  * path is known; every other case keeps `restorable: false` with a reason a user can read.
  *
- * What can be snapshotted, and how:
- *  - **Script source** — `studio.script_read` (or `script_read`) with the script path. Gives the
- *    exact source text to write back.
- *  - **Instance properties** — `studio.inspect_instance` with the instance path. Gives a property
- *    bag to re-apply.
- *  - **Inserted asset / instance** — the inverse is a delete; the target id is in the args.
+ * What can be snapshotted, and how (measured live on `Place1`, Roblox Studio MCP server):
+ *  - **Script source** — read via `script_read` (`target_file`, dot notation), which returns
+ *    line-numbered text (`1→…`). Gives the exact source to write back through `multi_edit`.
+ *  - **Inserted asset / instance** — the inverse is a delete; `studioWire.deleteInstance` runs Luau
+ *    to `:Destroy()` the path (the official server ships no delete tool).
+ *  - **Instance properties** — read via `inspect_instance` (`path`); re-applied best-effort via Luau.
  *  - Everything else (arbitrary `execute_luau`, deleted instances with children) has no safe
  *    inverse from a read: those stay non-restorable instead of guessing.
  *
@@ -21,35 +40,15 @@ import type { McpGateway } from '../tools/types';
  * not block the user's tool call, it only downgrades the checkpoint to non-restorable.
  */
 
-/** One thing the mutation can be undone from. */
-export type SnapshotEntry =
-  | { kind: 'script'; path: string; source: string }
-  | { kind: 'properties'; path: string; properties: Record<string, unknown> }
-  | { kind: 'inserted'; path: string };
-
-export interface PreStateSnapshot {
-  entries: SnapshotEntry[];
-  /** Tools whose inverse is known for every target. Empty means "not restorable". */
-  inverse: InverseStep[];
-  /** Why a target could not be snapshotted, when some could not. */
-  notes: string[];
-}
-
-export type InverseStep =
-  | { tool: 'script_write'; path: string; source: string }
-  | { tool: 'set_properties'; path: string; properties: Record<string, unknown> }
-  | { tool: 'delete_instance'; path: string };
-
-/** Tool names that write script source, in the order the snapshot prefers them. */
-const SCRIPT_WRITE_TOOLS = ['studio.write_script', 'studio.edit_script', 'studio.create_script', 'studio.multi_edit'] as const;
+/** Tool names that write script source — the snapshot keys off these to pre-read old source. */
+const SCRIPT_WRITE_TOOLS = [
+  'studio.write_script', 'studio.edit_script', 'studio.create_script', 'studio.multi_edit',
+  'multi_edit', 'write_script', 'edit_script', 'create_script',
+] as const;
 /** Tool names whose inverse is "delete what was inserted". */
-const INSERT_TOOLS = ['studio.insert_asset', 'studio.insert_instance'] as const;
+const INSERT_TOOLS = ['studio.insert_asset', 'studio.insert_instance', 'insert_asset', 'insert_instance'] as const;
 
-/** Read tools the snapshot uses, in preference order. */
-const SCRIPT_READ_TOOLS = ['studio.script_read', 'studio.read_script', 'script_read'] as const;
-const INSPECT_TOOLS = ['studio.inspect_instance', 'inspect_instance'] as const;
-
-const PATH_KEYS = ['path', 'script', 'target', 'targetPath', 'scriptPath', 'instancePath', 'filename'] as const;
+const PATH_KEYS = ['path', 'file_path', 'script', 'target', 'target_file', 'targetPath', 'scriptPath', 'instancePath', 'filename', 'assetId'] as const;
 
 function pathOf(args: unknown): string | null {
   if (args === null || typeof args !== 'object') return null;
@@ -61,8 +60,8 @@ function pathOf(args: unknown): string | null {
   return null;
 }
 
-/** Every script path a `multi_edit` touches, plus its own path. */
-function pathsOf(args: unknown): string[] {
+/** Every script path a `multi_edit` / `edits` array touches, plus its own path. */
+function scriptPathsOf(args: unknown): string[] {
   const found = new Set<string>();
   const visit = (value: unknown, depth: number): void => {
     if (depth > 2 || value === null || value === undefined) return;
@@ -83,7 +82,7 @@ function pathsOf(args: unknown): string[] {
   return [...found];
 }
 
-/** The source text a write tool is about to put on disk, when the args carry it. */
+/** The source text a write tool is about to put in, when the args carry it (used to detect creates). */
 function sourceOf(args: unknown): string | null {
   if (args === null || typeof args !== 'object') return null;
   const record = args as Record<string, unknown>;
@@ -91,72 +90,14 @@ function sourceOf(args: unknown): string | null {
     const value = record[key];
     if (typeof value === 'string') return value;
   }
-  return null;
-}
-
-/** Pull a source string out of whatever shape a read tool answered with. */
-function sourceFromReadResult(result: unknown): string | null {
-  if (typeof result === 'string') return result;
-  if (result === null || typeof result !== 'object') return null;
-  const record = result as Record<string, unknown>;
-  for (const key of ['source', 'content', 'text', 'script', 'code'] as const) {
-    const value = record[key];
-    if (typeof value === 'string') return value;
-  }
-  // Studio's MCP wraps content in a `content: [{ type: 'text', text }]` array.
-  const content = record.content;
-  if (Array.isArray(content)) {
-    for (const part of content) {
-      if (part !== null && typeof part === 'object') {
-        const text = (part as Record<string, unknown>).text;
-        if (typeof text === 'string') return text;
-      }
-    }
+  // Inside an edits[] entry the new text is `new_string`.
+  if (Array.isArray(record.edits)) {
+    const joined = (record.edits as Array<{ new_string?: string }>)
+      .map((edit) => edit?.new_string ?? '')
+      .join('');
+    if (joined) return joined;
   }
   return null;
-}
-
-/** Pull a property bag out of an inspect answer. */
-function propertiesFromInspect(result: unknown): Record<string, unknown> | null {
-  if (result === null || typeof result !== 'object') return null;
-  const record = result as Record<string, unknown>;
-  for (const key of ['properties', 'attributes', 'instance'] as const) {
-    const value = record[key];
-    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
-      const bag = value as Record<string, unknown>;
-      // `instance` may itself wrap `properties`.
-      if (key === 'instance' && bag.properties !== null && typeof bag.properties === 'object') {
-        return bag.properties as Record<string, unknown>;
-      }
-      return bag;
-    }
-  }
-  return null;
-}
-
-/**
- * Call the first read tool the gateway actually exposes. Returns `undefined` when none is
- * available, which is the honest "cannot snapshot" answer — never a fabricated success.
- */
-async function readWith(
-  mcp: McpGateway,
-  candidates: readonly string[],
-  args: Record<string, unknown>,
-  signal?: AbortSignal,
-): Promise<unknown> {
-  let available: Set<string>;
-  try {
-    available = new Set((await mcp.listTools()).map((tool) => tool.name));
-  } catch {
-    return undefined;
-  }
-  const tool = candidates.find((name) => available.has(name));
-  if (tool === undefined) return undefined;
-  try {
-    return await mcp.callTool(tool, args, signal);
-  } catch {
-    return undefined;
-  }
 }
 
 /**
@@ -177,16 +118,15 @@ export async function snapshotPreState(
   const isInsert = (INSERT_TOOLS as readonly string[]).includes(toolName);
 
   if (isScriptWrite) {
-    const paths = pathsOf(args);
+    const paths = scriptPathsOf(args);
     if (paths.length === 0) {
       notes.push('Không đọc được đường dẫn script từ tham số của công cụ.');
     }
     for (const path of paths) {
-      const read = await readWith(mcp, SCRIPT_READ_TOOLS, { path }, signal);
-      const source = read === undefined ? null : sourceFromReadResult(read);
+      const source = await readScriptSource(mcp, path, signal);
       if (source === null) {
         // A create has no old source by definition; its inverse is a delete, not a write.
-        const created = toolName === 'studio.create_script' || toolName === 'studio.write_script';
+        const created = toolName === 'studio.create_script' || toolName === 'studio.write_script' || toolName === 'create_script' || toolName === 'write_script';
         const about = sourceOf(args);
         if (created && about !== null) {
           entries.push({ kind: 'inserted', path });
@@ -208,14 +148,22 @@ export async function snapshotPreState(
       inverse.push({ tool: 'delete_instance', path });
     }
   } else {
-    // Property writes and arbitrary Luau have no read-back inverse we can trust.
+    // Property writes and arbitrary Luau: snapshot the property bag when the path is known, so the
+    // restore engine can at least attempt to re-apply it (verified by re-inspect afterwards).
     const path = pathOf(args);
     if (path !== null) {
-      const inspected = await readWith(mcp, INSPECT_TOOLS, { path }, signal);
-      const properties = inspected === undefined ? null : propertiesFromInspect(inspected);
+      const properties = await inspectInstance(mcp, path, signal);
       if (properties !== null) {
-        entries.push({ kind: 'properties', path, properties });
-        inverse.push({ tool: 'set_properties', path, properties });
+        // A raw `inspect_instance` bag is lossy (pseudo-paths, stringified Vector3/enums, read-only
+        // keys): re-applying it throws on the first bad key, so only round-trippable keys are kept.
+        // See `restorableProperties` for the measured basis.
+        const restorable = restorableProperties(properties);
+        if (Object.keys(restorable).length === 0) {
+          notes.push(`Không có thuộc tính nào của ${path} khôi phục được an toàn.`);
+        } else {
+          entries.push({ kind: 'properties', path, properties: restorable });
+          inverse.push({ tool: 'set_properties', path, properties: restorable });
+        }
       } else {
         notes.push(`Không có inverse an toàn cho ${toolName} trên ${path}.`);
       }
@@ -231,3 +179,4 @@ export async function snapshotPreState(
 export function isRestorable(snapshot: PreStateSnapshot): boolean {
   return snapshot.inverse.length > 0 && snapshot.notes.length === 0;
 }
+

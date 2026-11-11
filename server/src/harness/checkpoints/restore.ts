@@ -1,6 +1,14 @@
 import type { McpGateway } from '../tools/types';
 import type { CheckpointStore, WorkspaceCheckpoint } from './store';
-import { isRestorable, type InverseStep, type PreStateSnapshot } from './snapshot';
+import { isRestorable, type PreStateSnapshot } from './snapshot';
+import {
+  deleteInstance,
+  inspectInstance,
+  readScriptSource,
+  setInstanceProperties,
+  writeScriptSource,
+  type InverseStep,
+} from './studioWire';
 
 /**
  * Restore engine — Phase 3 of `docs/superpowers/plans/morphi-git.md`.
@@ -51,54 +59,10 @@ export interface RestoreResult {
 
 /** Read the current value of a target, in the same shape the snapshot stored. */
 async function currentSourceOf(mcp: McpGateway, path: string, signal?: AbortSignal): Promise<string | null> {
-  const result = await callFirst(mcp, ['studio.script_read', 'studio.read_script', 'script_read'], { path }, signal);
-  if (result === undefined) return null;
-  if (typeof result === 'string') return result;
-  if (result !== null && typeof result === 'object') {
-    const record = result as Record<string, unknown>;
-    for (const key of ['source', 'content', 'text', 'script', 'code'] as const) {
-      if (typeof record[key] === 'string') return record[key] as string;
-    }
-    const content = record.content;
-    if (Array.isArray(content)) {
-      for (const part of content) {
-        if (part !== null && typeof part === 'object') {
-          const text = (part as Record<string, unknown>).text;
-          if (typeof text === 'string') return text;
-        }
-      }
-    }
-  }
-  return null;
+  return readScriptSource(mcp, path, signal);
 }
 
-/** Call the first tool the gateway exposes, or return `undefined` when none is available. */
-async function callFirst(
-  mcp: McpGateway,
-  candidates: readonly string[],
-  args: Record<string, unknown>,
-  signal?: AbortSignal,
-): Promise<unknown> {
-  let available: Set<string>;
-  try {
-    available = new Set((await mcp.listTools()).map((tool) => tool.name));
-  } catch {
-    return undefined;
-  }
-  const tool = candidates.find((name) => available.has(name));
-  if (tool === undefined) return undefined;
-  try {
-    return await mcp.callTool(tool, args, signal);
-  } catch {
-    return undefined;
-  }
-}
-
-/** Which write tool restores a script, by what the connected server exposes. */
-const SCRIPT_WRITE_CANDIDATES = ['studio.write_script', 'studio.edit_script', 'studio.create_script'] as const;
-const DELETE_CANDIDATES = ['studio.delete_instance', 'studio.remove_instance'] as const;
-const PROPERTY_WRITE_CANDIDATES = ['studio.set_properties', 'studio.update_properties'] as const;
-
+/** The human-readable inverse plan, derived from the snapshot's own steps. */
 function planOf(snapshot: PreStateSnapshot): RestoreStepPlan[] {
   return snapshot.inverse.map((step) => {
     if (step.tool === 'script_write') {
@@ -112,9 +76,9 @@ function planOf(snapshot: PreStateSnapshot): RestoreStepPlan[] {
 }
 
 /**
- * Compare every script target against the snapshot. Property drift cannot be read reliably from
- * every Studio build, so only script source is diffed; the plan says so in `notes` instead of
- * implying a check that did not run.
+ * Compare every target against the snapshot. Script source is diffed exactly; a property target is
+ * diffed by re-inspecting the instance and comparing the keys the snapshot recorded. When the
+ * property bag cannot be read, that is a note — never a silent "checked".
  */
 async function detectDrift(
   mcp: McpGateway,
@@ -124,18 +88,33 @@ async function detectDrift(
 ): Promise<{ drift: string[]; notes: string[] }> {
   const drift: string[] = [];
   const notes: string[] = [];
-  let propertyTargets = 0;
   for (const entry of snapshot.entries) {
-    if (entry.kind !== 'script') {
-      if (entry.kind === 'properties') propertyTargets += 1;
+    if (entry.kind === 'inserted') continue;
+    if (entry.kind === 'properties') {
+      const live = await inspectInstance(mcp, entry.path, signal);
+      if (live === null) {
+        // The official server returns the bag from `inspect_instance`; if that failed we cannot
+        // prove the instance is safe to overwrite, which is drift for a batch (turn) restore.
+        if (strict) drift.push(`${entry.path} không đọc lại được thuộc tính — không xác nhận được trạng thái hiện tại.`);
+        else notes.push(`Không đọc lại được thuộc tính của ${entry.path}; sẽ kiểm tra sau khi ghi.`);
+        continue;
+      }
+      const changed = Object.entries(entry.properties)
+        .filter(([key, before]) => !sameValue(live[key], before))
+        .map(([key]) => key);
+      if (changed.length > 0) {
+        // The property still holds what the turn wrote, not what the snapshot recorded: restoring
+        // would overwrite a hand edit, so the plan refuses.
+        if (strict) drift.push(`${entry.path} đã đổi thuộc tính (${changed.join(', ')}) kể từ bản sao.`);
+        else notes.push(`${entry.path} có thuộc tính khác bản sao (${changed.join(', ')}).`);
+      }
       continue;
     }
     const live = await currentSourceOf(mcp, entry.path, signal);
     if (live === null) {
       // Cannot read ⇒ cannot prove the target is safe to overwrite. A single-checkpoint restore
-      // lets the post-write verification decide (the read tool may simply be named differently on
-      // this build), but a TURN-level undo is a batch: one unverifiable target would leave the
-      // turn half restored, so `strict` refuses the whole thing instead.
+      // lets the post-write verification decide, but a TURN-level undo is a batch: one unverifiable
+      // target would leave the turn half restored, so `strict` refuses the whole thing instead.
       if (strict) drift.push(`${entry.path} không đọc lại được — không xác nhận được trạng thái hiện tại.`);
       else notes.push(`Không đọc lại được ${entry.path} trước khi khôi phục; sẽ kiểm tra sau khi ghi.`);
       continue;
@@ -146,10 +125,23 @@ async function detectDrift(
       notes.push(`${entry.path} đang giống bản sao — không có gì để khôi phục.`);
     }
   }
-  if (propertyTargets > 0) {
-    notes.push('Thuộc tính không được so sánh trước khi khôi phục trên bản Studio này.');
-  }
   return { drift, notes };
+}
+
+/** Structural equality good enough for a Studio property bag (arrays and plain objects). */
+function sameValue(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (typeof left === 'number' && typeof right === 'number') return Math.abs(left - right) < 1e-9;
+  if (Array.isArray(left) && Array.isArray(right)) {
+    return left.length === right.length && left.every((value, index) => sameValue(value, right[index]));
+  }
+  if (left !== null && right !== null && typeof left === 'object' && typeof right === 'object') {
+    const a = left as Record<string, unknown>;
+    const b = right as Record<string, unknown>;
+    const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+    return [...keys].every((key) => sameValue(a[key], b[key]));
+  }
+  return false;
 }
 
 /** Build the preview without touching the workspace. */
@@ -228,19 +220,37 @@ export async function applyRestore(
 /** One inverse step. Returns null on success, or a human-readable failure reason. */
 async function applyStep(mcp: McpGateway, step: InverseStep, signal?: AbortSignal): Promise<string | null> {
   if (step.tool === 'script_write') {
-    const written = await callFirst(mcp, SCRIPT_WRITE_CANDIDATES, { path: step.path, source: step.source }, signal);
-    if (written === undefined) return 'Studio không mở công cụ ghi script để khôi phục.';
+    try {
+      await writeScriptSource(mcp, step.path, step.source, signal);
+    } catch (error) {
+      return error instanceof Error ? error.message : 'Studio không mở công cụ ghi script để khôi phục.';
+    }
     // Verify by reading back — a tool that answers OK but did not write is a failure, not success.
     const live = await currentSourceOf(mcp, step.path, signal);
     if (live === null) return 'Đã ghi nhưng không đọc lại được để xác nhận.';
     return live === step.source ? null : 'Đã ghi nhưng nội dung đọc lại không khớp bản sao.';
   }
   if (step.tool === 'delete_instance') {
-    const deleted = await callFirst(mcp, DELETE_CANDIDATES, { path: step.path }, signal);
-    return deleted === undefined ? 'Studio không mở công cụ xoá để khôi phục.' : null;
+    try {
+      const deleted = await deleteInstance(mcp, step.path, signal);
+      return deleted ? null : 'Studio báo xoá thất bại.';
+    } catch (error) {
+      return error instanceof Error ? error.message : 'Studio không mở công cụ xoá để khôi phục.';
+    }
   }
-  const set = await callFirst(mcp, PROPERTY_WRITE_CANDIDATES, { path: step.path, properties: step.properties }, signal);
-  return set === undefined ? 'Studio không mở công cụ đặt thuộc tính để khôi phục.' : null;
+  try {
+    const applied = await setInstanceProperties(mcp, step.path, step.properties, signal);
+    if (!applied) return 'Studio báo đặt thuộc tính thất bại.';
+  } catch (error) {
+    return error instanceof Error ? error.message : 'Studio không mở công cụ đặt thuộc tính để khôi phục.';
+  }
+  // Same anti-lie rule as scripts: re-inspect and require the recorded values back.
+  const live = await inspectInstance(mcp, step.path, signal);
+  if (live === null) return 'Đã đặt thuộc tính nhưng không đọc lại được để xác nhận.';
+  const mismatched = Object.entries(step.properties)
+    .filter(([key, before]) => !sameValue(live[key], before))
+    .map(([key]) => key);
+  return mismatched.length === 0 ? null : `Thuộc tính đọc lại không khớp bản sao (${mismatched.join(', ')}).`;
 }
 
 /**
