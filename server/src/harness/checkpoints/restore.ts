@@ -120,6 +120,7 @@ async function detectDrift(
   mcp: McpGateway,
   snapshot: PreStateSnapshot,
   signal?: AbortSignal,
+  strict = false,
 ): Promise<{ drift: string[]; notes: string[] }> {
   const drift: string[] = [];
   const notes: string[] = [];
@@ -131,9 +132,12 @@ async function detectDrift(
     }
     const live = await currentSourceOf(mcp, entry.path, signal);
     if (live === null) {
-      // Cannot read ⇒ cannot prove drift. Refusing here would block every restore on a build whose
-      // read tool is named differently, so this is a note, and the post-write verification decides.
-      notes.push(`Không đọc lại được ${entry.path} trước khi khôi phục; sẽ kiểm tra sau khi ghi.`);
+      // Cannot read ⇒ cannot prove the target is safe to overwrite. A single-checkpoint restore
+      // lets the post-write verification decide (the read tool may simply be named differently on
+      // this build), but a TURN-level undo is a batch: one unverifiable target would leave the
+      // turn half restored, so `strict` refuses the whole thing instead.
+      if (strict) drift.push(`${entry.path} không đọc lại được — không xác nhận được trạng thái hiện tại.`);
+      else notes.push(`Không đọc lại được ${entry.path} trước khi khôi phục; sẽ kiểm tra sau khi ghi.`);
       continue;
     }
     // The snapshot holds the state BEFORE the mutation, so a live value equal to it means the
@@ -154,6 +158,8 @@ export async function previewRestore(
   checkpoints: CheckpointStore,
   checkpointId: string,
   signal?: AbortSignal,
+  /** Turn-level undo: an unreadable target is drift, because the batch must not half-apply. */
+  strict = false,
 ): Promise<{ ok: true; preview: RestorePreview } | { ok: false; reason: RestoreRefusal }> {
   const checkpoint = checkpoints.get(checkpointId);
   if (checkpoint === undefined) return { ok: false, reason: 'NOT_FOUND' };
@@ -165,7 +171,7 @@ export async function previewRestore(
   }
   if (!mcp.connected || !mcp.studioLinked) return { ok: false, reason: 'STUDIO_NOT_CONNECTED' };
 
-  const { drift, notes } = await detectDrift(mcp, snapshot, signal);
+  const { drift, notes } = await detectDrift(mcp, snapshot, signal, strict);
   return {
     ok: true,
     preview: {
@@ -188,8 +194,10 @@ export async function applyRestore(
   checkpoints: CheckpointStore,
   checkpointId: string,
   signal?: AbortSignal,
+  /** Turn-level undo: pass true so an unreadable target refuses before any write. */
+  strict = false,
 ): Promise<{ ok: true; result: RestoreResult } | { ok: false; reason: RestoreRefusal }> {
-  const previewed = await previewRestore(mcp, checkpoints, checkpointId, signal);
+  const previewed = await previewRestore(mcp, checkpoints, checkpointId, signal, strict);
   if (!previewed.ok) return previewed;
   if (!previewed.preview.clean) {
     // Drift is a refusal, not a warning: the plan forbids overwriting hand edits.
@@ -233,4 +241,103 @@ async function applyStep(mcp: McpGateway, step: InverseStep, signal?: AbortSigna
   }
   const set = await callFirst(mcp, PROPERTY_WRITE_CANDIDATES, { path: step.path, properties: step.properties }, signal);
   return set === undefined ? 'Studio không mở công cụ đặt thuộc tính để khôi phục.' : null;
+}
+
+/**
+ * Turn-level undo — the "Undo" button on the end-of-message script summary.
+ *
+ * A turn is one user-visible change, but it can hold several mutating calls. Undoing it means
+ * restoring every restorable checkpoint whose `callId` belongs to that turn, and it must behave
+ * like ONE transaction at the decision boundary: if any of them drifted, nothing is written.
+ * Half-restoring a turn would leave the workspace in a state that matches neither the old nor the
+ * new code, which is worse than refusing.
+ *
+ * Checkpoints that never had a snapshot are reported separately (`notRestorable`) rather than
+ * silently skipped: the user asked to undo the turn, so they must learn which scripts cannot be
+ * put back.
+ */
+export interface TurnRestoreResult {
+  /** Checkpoint ids that were restored and verified. */
+  restored: string[];
+  /** Per-target failures from the checkpoints that were attempted. */
+  failed: Array<{ path: string; reason: string }>;
+  /** Checkpoints in this turn that had no snapshot; `reason` is the server's own sentence. */
+  notRestorable: Array<{ checkpointId: string; reason: string }>;
+  /** Script paths whose live content no longer matches the snapshot. Non-empty ⇒ nothing written. */
+  drift: string[];
+  status: 'restored' | 'restore-failed' | 'refused';
+}
+
+export type TurnRestoreRefusal = 'NOTHING_TO_RESTORE' | 'STUDIO_NOT_CONNECTED' | 'IN_PROGRESS';
+
+export async function restoreTurn(
+  mcp: McpGateway,
+  checkpoints: CheckpointStore,
+  sessionId: string,
+  callIds: readonly string[],
+  signal?: AbortSignal,
+): Promise<{ ok: true; result: TurnRestoreResult } | { ok: false; reason: TurnRestoreRefusal }> {
+  const wanted = new Set(callIds);
+  const rows = checkpoints.list(sessionId).filter((row) => wanted.has(row.manifest.callId));
+  if (rows.length === 0) return { ok: false, reason: 'NOTHING_TO_RESTORE' };
+
+  const notRestorable = rows
+    .filter((row) => !row.manifest.restorable || row.manifest.preState === null)
+    .map((row) => ({ checkpointId: row.id, reason: row.manifest.restoreReason }));
+
+  // Already-restored rows are not failures; they simply have nothing left to do.
+  const candidates = rows.filter((row) =>
+    row.manifest.restorable
+    && row.manifest.preState !== null
+    && row.status !== 'restored'
+    && row.status !== 'restoring');
+
+  if (candidates.length === 0) {
+    return {
+      ok: true,
+      result: { restored: [], failed: [], notRestorable, drift: [], status: 'refused' },
+    };
+  }
+  if (!mcp.connected || !mcp.studioLinked) return { ok: false, reason: 'STUDIO_NOT_CONNECTED' };
+
+  // Preview EVERY candidate before writing anything: one dirty target refuses the whole turn.
+  const drift: string[] = [];
+  for (const row of candidates) {
+    const previewed = await previewRestore(mcp, checkpoints, row.id, signal, true);
+    if (!previewed.ok) {
+      if (previewed.reason === 'IN_PROGRESS') return { ok: false, reason: 'IN_PROGRESS' };
+      notRestorable.push({ checkpointId: row.id, reason: previewed.reason });
+      continue;
+    }
+    drift.push(...previewed.preview.drift);
+  }
+  if (drift.length > 0) {
+    return {
+      ok: true,
+      result: { restored: [], failed: [], notRestorable, drift, status: 'refused' },
+    };
+  }
+
+  const restored: string[] = [];
+  const failed: TurnRestoreResult['failed'] = [];
+  for (const row of candidates) {
+    const applied = await applyRestore(mcp, checkpoints, row.id, signal, true);
+    if (!applied.ok) {
+      failed.push({ path: row.manifest.targets[0] ?? row.id, reason: applied.reason });
+      continue;
+    }
+    if (applied.result.status === 'restored') restored.push(row.id);
+    else failed.push(...applied.result.failed);
+  }
+
+  return {
+    ok: true,
+    result: {
+      restored,
+      failed,
+      notRestorable,
+      drift: [],
+      status: failed.length === 0 ? 'restored' : 'restore-failed',
+    },
+  };
 }

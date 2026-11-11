@@ -23,6 +23,13 @@ export interface ChatViewProps {
     onOpenSettings: () => void;
     /** Undo this user message, its AI reply, and undoable changes from that turn. */
     onUndoMessage?: (userMessageId: string) => void;
+    /**
+     * Undo the Studio changes of one turn (the button on the end-of-message script summary). The
+     * call ids identify the turn's checkpoints; absent means no restore path is available.
+     */
+    onUndoTurn?: (callIds: string[]) => void;
+    /** Call ids of the turn whose undo request is currently in flight. */
+    undoTurnBusyCallIds?: readonly string[];
     /** Opens a subagent's own session when its card asks for it. */
     onOpenChildSession?: (childSessionId: string) => void;
     endRef?: Ref<HTMLDivElement>;
@@ -118,6 +125,8 @@ export function ChatView({
     onApprovalDecision,
     onOpenSettings,
     onUndoMessage,
+    onUndoTurn,
+    undoTurnBusyCallIds,
     onOpenChildSession,
     endRef,
 }: ChatViewProps) {
@@ -251,6 +260,12 @@ export function ChatView({
                         workedLive={worked !== undefined && segmentId === segment && liveTurn}
                         hideActivity={hideActivity}
                         hideTextStep={hideTextFor(index)}
+                        onUndoTurn={onUndoTurn !== undefined && worked !== undefined
+                            ? () => onUndoTurn(worked.calls.map((step) => step.call.callId))
+                            : undefined}
+                        undoTurnBusy={worked !== undefined
+                            && undoTurnBusyCallIds !== undefined
+                            && worked.calls.some((step) => undoTurnBusyCallIds.includes(step.call.callId))}
                     />
                 );
             })}

@@ -620,3 +620,12 @@ export interface RestoreResult {
   applied: number;
   failed: Array<{ path: string; reason: string }>;
 }
+
+/** Turn-level undo result — server/src/harness/checkpoints/restore.ts `restoreTurn`. */
+export interface TurnRestoreResult {
+  restored: string[];
+  failed: Array<{ path: string; reason: string }>;
+  notRestorable: Array<{ checkpointId: string; reason: string }>;
+  drift: string[];
+  status: 'restored' | 'restore-failed' | 'refused';
+}

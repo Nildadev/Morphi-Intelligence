@@ -461,6 +461,59 @@ describe('sessions routes', () => {
     expect(foreign.status).toBe(404);
   });
 
+  it('undoes a whole turn from its call ids, and validates the body', async () => {
+    const { harness, mcp } = buildHarness();
+    const app = buildApp(harness);
+    const project = await createProject(app);
+    const session = await createSession(app, project.id);
+
+    harness.checkpoints.record({
+      sessionId: session.id,
+      label: 'turn undo',
+      manifest: {
+        tool: 'studio.write_script',
+        callId: 'call_1',
+        argsHash: 'h',
+        targets: ['A'],
+        outcome: 'ok',
+        preState: {
+          entries: [{ kind: 'script', path: 'A', source: 'old' }],
+          inverse: [{ tool: 'script_write', path: 'A', source: 'old' }],
+          notes: [],
+        },
+        restorable: true,
+        restoreReason: 'ok',
+      },
+    });
+
+    mcp.connected = true;
+    mcp.studioLinked = true;
+    mcp.tools = [
+      { name: 'studio.script_read', description: 'read', parameters: { type: 'object' } },
+      { name: 'studio.write_script', description: 'write', parameters: { type: 'object' } },
+    ];
+    let live = 'new';
+    mcp.callTool = async (name: string, args: unknown) => {
+      if (name === 'studio.script_read') return live;
+      live = (args as { source: string }).source;
+      return { ok: true };
+    };
+
+    const restored = await api(app).post(`/api/sessions/${session.id}/undo-turn`).send({ callIds: ['call_1'] });
+    expect(restored.status).toBe(200);
+    expect(restored.body).toMatchObject({ status: 'restored', drift: [] });
+    expect(restored.body.restored).toHaveLength(1);
+
+    // An empty list is a 400, not a silent no-op.
+    const empty = await api(app).post(`/api/sessions/${session.id}/undo-turn`).send({ callIds: [] });
+    expect(empty.status).toBe(400);
+
+    // Call ids that match nothing answer 409 with the reason instead of pretending.
+    const none = await api(app).post(`/api/sessions/${session.id}/undo-turn`).send({ callIds: ['nope'] });
+    expect(none.status).toBe(409);
+    expect(none.body).toMatchObject({ error: { code: 'NOTHING_TO_RESTORE' } });
+  });
+
   it('replays events after a sequence number', async () => {
     const { harness } = buildHarness();
     const app = buildApp(harness);

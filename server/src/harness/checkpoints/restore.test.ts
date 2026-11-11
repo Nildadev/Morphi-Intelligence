@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createTestDb } from '../../../test/db';
-import { applyRestore, previewRestore } from './restore';
+import { applyRestore, previewRestore, restoreTurn } from './restore';
 import { CheckpointStore } from './store';
 import type { PreStateSnapshot } from './snapshot';
 import type { McpGateway } from '../tools/types';
@@ -196,6 +196,117 @@ describe('applyRestore', () => {
         const restored = await applyRestore(gateway, store, checkpoint.id);
 
         expect(restored).toEqual({ ok: false, reason: 'IN_PROGRESS' });
+        expect(gateway.writes).toEqual([]);
+    });
+});
+
+describe('restoreTurn - the Undo button on the script summary', () => {
+    const recordTurn = (
+        store: CheckpointStore,
+        callId: string,
+        path: string,
+        source: string,
+        restorable = true,
+    ) => store.record({
+        sessionId: 's1',
+        label: `edit ${path}`,
+        manifest: {
+            tool: 'studio.write_script',
+            callId,
+            argsHash: 'h',
+            targets: [path],
+            outcome: 'ok',
+            preState: restorable
+                ? { entries: [{ kind: 'script', path, source }], inverse: [{ tool: 'script_write', path, source }], notes: [] }
+                : null,
+            restorable,
+            restoreReason: restorable ? 'ok' : 'Chưa chụp được snapshot trước khi sửa.',
+        },
+    });
+
+    it('restores every restorable checkpoint of the turn in one call', async () => {
+        const store = new CheckpointStore(db());
+        recordTurn(store, 'call_a', 'A', 'old-a');
+        recordTurn(store, 'call_b', 'B', 'old-b');
+        const gateway = mcp({ live: 'new' });
+        // Two scripts, so the fake read/write must track each path independently.
+        const byPath = new Map([['A', 'new'], ['B', 'new']]);
+        gateway.listTools = async () => ['studio.script_read', 'studio.write_script'].map((name) => ({
+            name, description: name, parameters: { type: 'object' },
+        }));
+        gateway.callTool = async (name: string, args: unknown) => {
+            const record = args as { path: string; source?: string };
+            if (name === 'studio.script_read') return byPath.get(record.path) ?? null;
+            gateway.writes.push({ tool: name, args });
+            byPath.set(record.path, record.source ?? '');
+            return { ok: true };
+        };
+
+        const result = await restoreTurn(gateway, store, 's1', ['call_a', 'call_b']);
+
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(result.result.status).toBe('restored');
+        expect(result.result.restored).toHaveLength(2);
+        expect(byPath.get('A')).toBe('old-a');
+        expect(byPath.get('B')).toBe('old-b');
+    });
+
+    it('refuses the WHOLE turn when one target drifted, writing nothing', async () => {
+        // Half-restoring a turn leaves the workspace matching neither the old nor the new code.
+        // Drift here is a target that cannot be read back (`null`), which the engine treats as an
+        // unverifiable restore and therefore refuses before writing anything.
+        const store = new CheckpointStore(db());
+        recordTurn(store, 'call_a', 'A', 'old-a');
+        recordTurn(store, 'call_b', 'B', 'old-b');
+        const gateway = mcp({ live: 'new' });
+        // `A` reads back fine; `B` is gone from the place, so its preview cannot be trusted.
+        gateway.listTools = async () => ['studio.script_read', 'studio.write_script'].map((name) => ({
+            name, description: name, parameters: { type: 'object' },
+        }));
+        gateway.callTool = async (name: string, args: unknown) => {
+            const record = args as { path: string };
+            if (name === 'studio.script_read') return record.path === 'B' ? null : 'new';
+            gateway.writes.push({ tool: name, args });
+            return { ok: true };
+        };
+
+        const result = await restoreTurn(gateway, store, 's1', ['call_a', 'call_b']);
+
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(result.result.status).toBe('refused');
+        expect(result.result.restored).toEqual([]);
+        expect(gateway.writes).toEqual([]);
+    });
+
+    it('reports non-restorable checkpoints separately instead of implying full success', async () => {
+        const store = new CheckpointStore(db());
+        recordTurn(store, 'call_a', 'A', 'old-a');
+        recordTurn(store, 'call_b', 'B', '', false);
+        const gateway = mcp({ live: 'new' });
+
+        const result = await restoreTurn(gateway, store, 's1', ['call_a', 'call_b']);
+
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(result.result.restored).toHaveLength(1);
+        expect(result.result.notRestorable).toHaveLength(1);
+        expect(result.result.notRestorable[0]?.reason).toContain('snapshot');
+    });
+
+    it('says NOTHING_TO_RESTORE when the call ids match no checkpoint', async () => {
+        const store = new CheckpointStore(db());
+        await expect(restoreTurn(mcp(), store, 's1', ['nope']))
+            .resolves.toEqual({ ok: false, reason: 'NOTHING_TO_RESTORE' });
+    });
+
+    it('refuses without a linked Studio, before any write', async () => {
+        const store = new CheckpointStore(db());
+        recordTurn(store, 'call_a', 'A', 'old-a');
+        const gateway = mcp({ linked: false });
+        await expect(restoreTurn(gateway, store, 's1', ['call_a']))
+            .resolves.toEqual({ ok: false, reason: 'STUDIO_NOT_CONNECTED' });
         expect(gateway.writes).toEqual([]);
     });
 });

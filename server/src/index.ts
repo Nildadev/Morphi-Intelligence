@@ -158,7 +158,10 @@ if (fakeMode) {
     },
     isConcurrencySafe: true,
     approval: 'auto',
-    presentation: { label: 'E2E edit script', risk: 'low' },
+    // `medium`, not `low`: the pipeline only records a workspace checkpoint for a mutating
+    // `studio.*` call with risk != low, and this fixture exists to exercise that path (the
+    // summary's Undo button needs a real checkpoint to restore).
+    presentation: { label: 'E2E edit script', risk: 'medium' },
   });
 
   // The rest of the `/script alltool` tour. Each is the smallest tool that produces a distinct

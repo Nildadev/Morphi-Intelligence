@@ -31,6 +31,13 @@ export interface MessageItemProps {
     hideActivity?: boolean;
     /** Hide this row's text step: the text is an ordered entry in the final worked block. */
     hideTextStep?: boolean;
+    /**
+     * Undo the Studio changes this turn made (the button on the script summary). Absent means no
+     * restore path — no session, a live turn, or nothing restorable — and no button is drawn.
+     */
+    onUndoTurn?: () => void;
+    /** The turn-level undo request is in flight. */
+    undoTurnBusy?: boolean;
 }
 
 function formatDuration(ms: number): string {
@@ -66,7 +73,7 @@ function isRuntimeNotice(message: DerivedMessage): boolean {
  * Task 23 transcript row. User messages are a tinted right-aligned bubble (Ruling U4); assistant
  * only by copy — never rendered a second time (Ruling 6).
  */
-export function MessageItem({ message, toolProgress, isStreaming = false, onRegenerate, onOpenChildSession, onUndo, workedEntries, workedTotalMs, workedLive = false, hideActivity = false, hideTextStep = false }: MessageItemProps) {
+export function MessageItem({ message, toolProgress, isStreaming = false, onRegenerate, onOpenChildSession, onUndo, workedEntries, workedTotalMs, workedLive = false, hideActivity = false, hideTextStep = false, onUndoTurn, undoTurnBusy = false }: MessageItemProps) {
     const [copied, setCopied] = useState(false);
 
     const copyMessage = async () => {
@@ -253,7 +260,12 @@ export function MessageItem({ message, toolProgress, isStreaming = false, onRege
               * something — a read-only turn shows no "0 scripts changed" line. Intermediate rows
               * have no activity calls (`hideActivity`), so they never render it. */}
             {turnChanges !== null ? (
-                <TurnWorkSummary summary={turnChanges} live={isStreaming || workedLive || !allSettled} />
+                <TurnWorkSummary
+                    summary={turnChanges}
+                    live={isStreaming || workedLive || !allSettled}
+                    onUndo={onUndoTurn}
+                    undoBusy={undoTurnBusy}
+                />
             ) : null}
 
             {(message.content !== '' || onRegenerate !== undefined) && (

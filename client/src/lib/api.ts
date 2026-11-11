@@ -34,6 +34,7 @@ import type {
   SubagentTreeEntry,
   ToolMetadata,
   ToolToggleResult,
+  TurnRestoreResult,
   WorkspaceCheckpoint,
 } from '../types';
 import { getToken } from './token';
@@ -412,6 +413,12 @@ export const api = {
     /** Applies the inverse plan; the server answers `restore-failed` rather than lying. */
     restore: (id: string, checkpointId: string): Promise<RestoreResult> =>
       post<RestoreResult>(`/sessions/${segment(id)}/checkpoints/${segment(checkpointId)}/restore`, {}),
+    /**
+     * Turn-level undo: restores every restorable checkpoint of one turn. Drift on any target
+     * refuses the whole turn (`status: 'refused'`) rather than leaving it half old, half new.
+     */
+    undoTurn: (id: string, callIds: string[]): Promise<TurnRestoreResult> =>
+      post<TurnRestoreResult>(`/sessions/${segment(id)}/undo-turn`, { callIds }),
     /** The goal is a durable event, not a session column: the loop reads it back off the log. */
     setGoal: (id: string, objective: string): Promise<GoalSetResult> =>
       post<GoalSetResult>(`/sessions/${segment(id)}/goal`, { objective }),

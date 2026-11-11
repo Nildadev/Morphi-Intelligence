@@ -95,6 +95,8 @@ export const ChatInterface: React.FC = () => {
      * Docked right-hand panel for a subagent child session. Opening it must NOT touch the main
      * pane: the parent transcript keeps its scroll, its live draft and its running stream.
      */
+    /** Call ids of the turn whose Studio-undo request is in flight (drives the summary button). */
+    const [undoTurnBusy, setUndoTurnBusy] = useState<string[]>([]);
     const [sidePanel, setSidePanel] = useState<
         { kind: 'child'; title: string; childSessionId: string } | { kind: 'history'; title: string } | null
     >(null);
@@ -603,8 +605,7 @@ export const ChatInterface: React.FC = () => {
         }
     };
 
-    const handleUndoMessage = async (userMessageId: string) => {
-        const sessionId = activeSessionIdRef.current ?? currentSessionId;
+    const handleUndoMessage = async (userMessageId: string) => {        const sessionId = activeSessionIdRef.current ?? currentSessionId;
         if (!sessionId || streaming || starting || turnInFlightRef.current.has(sessionId)) return;
         // Capture the text BEFORE the revert: the undone user message lands back in the
         // composer so the user can edit and resend it instead of retyping.
@@ -623,6 +624,40 @@ export const ChatInterface: React.FC = () => {
         } finally {
             turnInFlightRef.current.delete(sessionId);
             cancelRequestedRef.current.delete(sessionId);
+        }
+    };
+
+    /**
+     * Undo the Studio changes of one turn — the "Hoàn tác" button on the end-of-message script
+     * summary. This is the workspace half of undo: `handleUndoMessage` reverts the conversation,
+     * this restores the scripts the turn wrote.
+     *
+     * The toast reports what the server actually did, never a generic "done": a refused turn
+     * (drift), a partial restore and "nothing restorable" are three different outcomes and the
+     * user has to know which one they got.
+     */
+    const handleUndoTurn = async (callIds: string[]) => {        const sessionId = activeSessionIdRef.current ?? currentSessionId;
+        if (!sessionId || callIds.length === 0) return;
+        setUndoTurnBusy(callIds);
+        try {
+            const result = await api.sessions.undoTurn(sessionId, callIds);
+            if (result.drift.length > 0) {
+                showToast('error', vi.chat.undoDrift, vi.chat.undoTurn);
+            } else if (result.restored.length === 0) {
+                showToast('warning', vi.chat.undoNothing, vi.chat.undoTurn);
+            } else if (result.failed.length > 0) {
+                showToast(
+                    'error',
+                    `${vi.chat.undoPartial} ${result.failed.map((entry) => entry.reason).join('; ')}`,
+                    vi.chat.undoTurn,
+                );
+            } else {
+                showToast('success', vi.chat.undoRestored, vi.chat.undoTurn);
+            }
+        } catch (error) {
+            showToast('error', errorCopy(codeOf(error)), vi.chat.undoTurn);
+        } finally {
+            setUndoTurnBusy([]);
         }
     };
 
@@ -1288,6 +1323,8 @@ export const ChatInterface: React.FC = () => {
                                 streaming={streaming}
                                 onRegenerate={(assistantMessageId) => { void handleRegenerate(assistantMessageId); }}
                                 onUndoMessage={(userMessageId) => { void handleUndoMessage(userMessageId); }}
+                                onUndoTurn={(callIds) => { void handleUndoTurn(callIds); }}
+                                undoTurnBusyCallIds={undoTurnBusy}
                                 onApprovalDecision={(approvalId, decision, scope, feedback) => {
                                     void handleApproval(approvalId, decision, scope, feedback);
                                 }}

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { TurnWorkSummary } from './TurnWorkSummary';
 import { diffLines, type ScriptChange, type TurnChangeSummary } from '../../lib/turnChanges';
@@ -114,5 +114,48 @@ describe('TurnWorkSummary', () => {
             'aria-label',
             '2 script đã thay đổi · Các script đã thay đổi trong lượt này',
         );
+    });
+});
+
+describe('TurnWorkSummary - framed row with the Undo action', () => {
+    it('draws a bordered container, not a bare line', () => {
+        const { container } = render(<TurnWorkSummary summary={summaryOf()} />);
+        const frame = container.firstElementChild as HTMLElement;
+        expect(frame.className).toContain('border');
+        expect(frame.className).toContain('rounded-xl');
+        expect(frame.className).toContain('bg-bg-card');
+    });
+
+    it('shows Undo next to the count, visible while collapsed', () => {
+        const onUndo = vi.fn();
+        render(<TurnWorkSummary summary={summaryOf()} onUndo={onUndo} />);
+        const undo = screen.getByRole('button', { name: 'Hoàn tác' });
+        expect(undo).toBeVisible();
+        // The list is still collapsed, so Undo does not require expanding first.
+        expect(screen.queryByRole('list')).toBeNull();
+    });
+
+    it('calls the handler once per click', () => {
+        const onUndo = vi.fn();
+        render(<TurnWorkSummary summary={summaryOf()} onUndo={onUndo} />);
+        fireEvent.click(screen.getByRole('button', { name: 'Hoàn tác' }));
+        expect(onUndo).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows no Undo button when there is no restore path', () => {
+        render(<TurnWorkSummary summary={summaryOf()} />);
+        expect(screen.queryByRole('button', { name: 'Hoàn tác' })).toBeNull();
+    });
+
+    it('reports the request in flight instead of accepting a second click', () => {
+        render(<TurnWorkSummary summary={summaryOf()} onUndo={() => undefined} undoBusy />);
+        const undo = screen.getByRole('button', { name: 'Hoàn tác' });
+        expect(undo).toBeDisabled();
+        expect(undo).toHaveTextContent('Đang hoàn tác…');
+    });
+
+    it('hides Undo on a live turn, where nothing has settled yet', () => {
+        render(<TurnWorkSummary summary={summaryOf()} onUndo={() => undefined} live />);
+        expect(screen.queryByRole('button', { name: 'Hoàn tác' })).toBeNull();
     });
 });

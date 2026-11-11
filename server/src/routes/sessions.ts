@@ -1,7 +1,7 @@
 import { Router, type Request } from 'express';
 import { z } from 'zod';
 import type { Harness } from '../harness/harness';
-import { applyRestore, previewRestore } from '../harness/checkpoints/restore';
+import { applyRestore, previewRestore, restoreTurn } from '../harness/checkpoints/restore';
 import { createId } from '../harness/shared/id';
 import { setPlanMode } from '../harness/plan/mode';
 import { SubagentBusyError, SubagentDepthError } from '../harness/subagents';
@@ -17,6 +17,10 @@ const createSessionSchema = z.strictObject({
 const pinSchema = z.strictObject({ pinned: z.boolean().optional() });
 const branchSchema = z.strictObject({ toSeq: z.number().int().min(0).optional() });
 const undoMessageSchema = z.strictObject({ messageId: z.string().trim().min(1).max(120) });
+/** Turn-level undo: the call ids the summary counted. Capped so one request cannot scan the log. */
+const undoTurnSchema = z.strictObject({
+  callIds: z.array(z.string().trim().min(1).max(120)).min(1).max(100),
+});
 const goalSchema = z.strictObject({ objective: z.string().trim().min(1).max(2000) });
 const subagentSchema = z.strictObject({ task: z.string().trim().min(1).max(8000) });
 
@@ -113,6 +117,24 @@ export function createSessionsRouter(harness: Harness): Router {
     res.json(restored.result);
   }));
 
+  /**
+   * Turn-level undo — the "Hoàn tác" button on the end-of-message script summary.
+   *
+   * One turn can hold several mutating calls, so this is a batch: every restorable checkpoint whose
+   * `callId` is in the body is restored, and the batch behaves like one transaction at the decision
+   * boundary — a drifted target refuses the WHOLE turn instead of leaving half of it old and half
+   * new. Checkpoints with no snapshot come back in `notRestorable` with the server's own reason,
+   * so the UI can say which scripts could not be put back rather than implying full success.
+   */
+  router.post('/:id/undo-turn', api(async (req, res) => {
+    const id = sessionIdOf(req);
+    requireSession(harness, id);
+    const { callIds } = parseWith(undoTurnSchema, req.body ?? {}, 'body');
+    const result = await restoreTurn(harness.mcp, harness.checkpoints, id, callIds);
+    if (!result.ok) throw new HttpError(409, result.reason);
+    res.json(result.result);
+  }));
+
   router.post('/:id/pin', api((req, res) => {
     const id = sessionIdOf(req);
     // Pinning answers "toggle it" when no flag was sent, so this route genuinely needs the stored
@@ -141,8 +163,7 @@ export function createSessionsRouter(harness: Harness): Router {
 
   // Git-like branch: copy the effective log prefix up to `toSeq` (or the whole log) into a new
   // visible session. The source stays intact, so branching is the redo/checkout path after an undo.
-  router.post('/:id/branch', api((req, res) => {
-    const id = sessionIdOf(req);
+  router.post('/:id/branch', api((req, res) => {    const id = sessionIdOf(req);
     requireSession(harness, id);
     const { toSeq } = parseWith(branchSchema, req.body ?? {}, 'body');
     const source = harness.sessions.get(id);
