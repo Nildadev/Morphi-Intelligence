@@ -1,6 +1,6 @@
 import type { McpGateway } from '../tools/types';
 import type { CheckpointStore, WorkspaceCheckpoint } from './store';
-import { isRestorable, type PreStateSnapshot } from './snapshot';
+import { isRestorable, type PostStateEntry, type PostStateSnapshot, type PreStateSnapshot } from './snapshot';
 import {
   deleteInstance,
   inspectInstance,
@@ -89,18 +89,31 @@ function planOf(snapshot: PreStateSnapshot): RestoreStepPlan[] {
 }
 
 /**
- * Compare every target against the snapshot. Script source is diffed exactly; a property target is
- * diffed by re-inspecting the instance and comparing the keys the snapshot recorded. When the
- * property bag cannot be read, that is a note — never a silent "checked".
+ * Compare every target with what the TURN wrote (`postState`). Script source is diffed exactly; a
+ * property target is diffed by re-inspecting the instance and comparing the keys the turn touched.
+ * When the property bag cannot be read, that is a note — never a silent "checked".
+ *
+ * Why post-state and not pre-state: after a successful mutation the live workspace legitimately
+ * differs from the pre-state, so a pre-state-only comparison cannot tell the turn's own write from a
+ * later hand edit — measured live, a script hand-edited to `local V = 99` after a turn that wrote
+ * `local V = 2` previewed as clean and the undo overwrote it. The three cases are now distinct:
+ *   live == post ⇒ the turn's write, invert it;
+ *   live == pre  ⇒ already back at the old state, a no-op note;
+ *   neither      ⇒ edited after the turn ⇒ drift (refuse).
+ * Checkpoints recorded before post-state capture existed have `postState: null` and keep the old
+ * pre-state behaviour, so history stays restorable instead of becoming permanently refused.
  */
 async function detectDrift(
   mcp: McpGateway,
   snapshot: PreStateSnapshot,
   signal?: AbortSignal,
   strict = false,
+  postState?: PostStateSnapshot | null,
 ): Promise<{ drift: string[]; notes: string[] }> {
   const drift: string[] = [];
   const notes: string[] = [];
+  const postOf = (path: string): PostStateEntry | undefined =>
+    postState?.entries.find((entry) => entry.path === path);
   for (const entry of snapshot.entries) {
     if (entry.kind === 'inserted') continue;
     if (entry.kind === 'properties') {
@@ -112,6 +125,21 @@ async function detectDrift(
         else notes.push(`Không đọc lại được thuộc tính của ${entry.path}; sẽ kiểm tra sau khi ghi.`);
         continue;
       }
+      const post = postOf(entry.path);
+      const changedSincePost = post !== undefined && post.kind === 'properties'
+        ? Object.keys({ ...entry.properties, ...post.properties })
+          .filter((key) => !sameValue(live[key], post.properties[key]))
+        : [];
+      if (changedSincePost.length > 0) {
+        // The instance no longer holds what the turn wrote: a hand edit landed afterwards, and
+        // restoring would overwrite it.
+        const message = `${entry.path} đã bị sửa tay sau lượt này (${changedSincePost.join(', ')}).`;
+        if (strict) drift.push(message);
+        else notes.push(message);
+        continue;
+      }
+      if (post !== undefined) continue;
+      // No post-state (an older checkpoint): fall back to the pre-state comparison.
       const changed = Object.entries(entry.properties)
         .filter(([key, before]) => !sameValue(live[key], before))
         .map(([key]) => key);
@@ -132,8 +160,22 @@ async function detectDrift(
       else notes.push(`Không đọc lại được ${entry.path} trước khi khôi phục; sẽ kiểm tra sau khi ghi.`);
       continue;
     }
-    // The snapshot holds the state BEFORE the mutation, so a live value equal to it means the
-    // mutation never landed (or was already undone) — restoring would be a no-op, not a drift.
+    const post = postOf(entry.path);
+    if (post !== undefined && post.kind === 'script') {
+      // The live source is exactly what the turn wrote: the normal, clean case.
+      if (live === post.source) continue;
+      // Already back at the old source (never landed, or undone): writing it again is a no-op.
+      if (live === entry.source) {
+        notes.push(`${entry.path} đang giống bản sao — không có gì để khôi phục.`);
+        continue;
+      }
+      const message = `${entry.path} đã bị sửa tay sau lượt này — không ghi đè lên thay đổi đó.`;
+      if (strict) drift.push(message);
+      else notes.push(message);
+      continue;
+    }
+    // No post-state (an older checkpoint): a live value equal to the pre-state means the mutation
+    // never landed (or was already undone) — restoring would be a no-op, not a drift.
     if (live === entry.source) {
       notes.push(`${entry.path} đang giống bản sao — không có gì để khôi phục.`);
     }
@@ -176,7 +218,7 @@ export async function previewRestore(
   }
   if (!mcp.connected || !mcp.studioLinked) return { ok: false, reason: 'STUDIO_NOT_CONNECTED' };
 
-  const { drift, notes } = await detectDrift(mcp, snapshot, signal, strict);
+  const { drift, notes } = await detectDrift(mcp, snapshot, signal, strict, checkpoint.manifest.postState ?? null);
   return {
     ok: true,
     preview: {

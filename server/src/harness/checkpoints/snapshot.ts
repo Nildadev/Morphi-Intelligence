@@ -18,6 +18,31 @@ export interface PreStateSnapshot {
   notes: string[];
 }
 
+/** One target's state AFTER the mutation landed, captured by re-reading it. */
+export type PostStateEntry =
+  | { kind: 'script'; path: string; source: string }
+  | { kind: 'properties'; path: string; properties: Record<string, unknown> };
+
+/**
+ * What the turn itself wrote, per target.
+ *
+ * Without this, drift detection can only compare the live workspace with the PRE-state — and after a
+ * successful mutation the live workspace legitimately differs from it. Measured live before this
+ * existed: a script hand-edited to `local V = 99` AFTER the turn (the turn had written `local V = 2`)
+ * previewed as `clean: true` and the undo silently overwrote that hand edit, which is exactly what
+ * the plan forbids. Comparing against the POST-state makes the three cases distinguishable:
+ *   live == post ⇒ the turn's own write, safe to invert;
+ *   live == pre  ⇒ already back at the old state, a no-op;
+ *   neither      ⇒ someone edited it after the turn, so refuse (never overwrite).
+ *
+ * `inserted` targets are not captured: their inverse is a delete, so there is no content to compare.
+ */
+export interface PostStateSnapshot {
+  entries: PostStateEntry[];
+  /** Targets whose post-state could not be read; drift then falls back to the pre-state comparison. */
+  notes: string[];
+}
+
 
 /**
  * Pre-mutation snapshot — Phase 3 of `docs/superpowers/plans/morphi-git.md`.
@@ -198,5 +223,38 @@ function declaresCreate(toolName: string, args: unknown): boolean {
 /** A snapshot is restorable only when every touched target produced an inverse step. */
 export function isRestorable(snapshot: PreStateSnapshot): boolean {
   return snapshot.inverse.length > 0 && snapshot.notes.length === 0;
+}
+
+/**
+ * Re-read every target AFTER the mutation, so a later restore can tell "the turn wrote this" from
+ * "a human edited it afterwards". Never throws: a failed read only weakens drift detection for that
+ * target (it falls back to the pre-state comparison), it never fails the turn.
+ */
+export async function snapshotPostState(
+  mcp: McpGateway,
+  pre: PreStateSnapshot,
+  signal?: AbortSignal,
+): Promise<PostStateSnapshot> {
+  const entries: PostStateEntry[] = [];
+  const notes: string[] = [];
+  for (const entry of pre.entries) {
+    if (entry.kind === 'inserted') continue;
+    if (entry.kind === 'script') {
+      const source = await readScriptSource(mcp, entry.path, signal);
+      if (source === null) {
+        notes.push(`Không đọc lại được ${entry.path} sau khi sửa — lượt sau sẽ so với trạng thái trước đó.`);
+        continue;
+      }
+      entries.push({ kind: 'script', path: entry.path, source });
+      continue;
+    }
+    const bag = await inspectInstance(mcp, entry.path, signal);
+    if (bag === null) {
+      notes.push(`Không đọc lại được thuộc tính của ${entry.path} sau khi sửa.`);
+      continue;
+    }
+    entries.push({ kind: 'properties', path: entry.path, properties: restorableProperties(bag) });
+  }
+  return { entries, notes };
 }
 

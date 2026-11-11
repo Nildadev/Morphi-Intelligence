@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import type { PreStateSnapshot } from './snapshot';
+import type { PostStateSnapshot, PreStateSnapshot } from './snapshot';
 
 /**
  * Phase 2 of `docs/superpowers/plans/morphi-git.md`: an immutable audit record for one
@@ -21,6 +21,12 @@ export interface CheckpointManifest {
    * `null` means no snapshot was taken; the checkpoint is then an audit record only.
    */
   preState: PreStateSnapshot | null;
+  /**
+   * Phase 5: what the turn itself wrote, per target (null when it could not be read, and absent on
+   * checkpoints recorded before post-state capture existed). Drift compares the live workspace with
+   * THIS, so a hand edit made after the turn is refused instead of silently overwritten.
+   */
+  postState?: PostStateSnapshot | null;
   /**
    * True only when every touched target produced a known inverse step (see `snapshot.ts`).
    * The plan's safety rule: never claim undoability that is not backed by a snapshot.

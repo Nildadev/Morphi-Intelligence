@@ -26,6 +26,9 @@ export const FAKE_SCRIPTS = [
   // HTTP path (POST /chat/stream → pipeline snapshot → Studio mutate → checkpoint → POST /undo-turn
   // → Studio restore) runs against live Studio, not a fake tool. Used by MORPHI_LIVE_STUDIO e2e.
   'studio-real-edit',
+  // Batch-undo probe: TWO real `studio.multi_edit` calls on two DIFFERENT scripts in ONE turn, so
+  // the turn-level undo can be proved to be all-or-nothing (one refused target ⇒ nothing written).
+  'studio-batch-edit',
   // Design tour: one turn that calls every row shape the transcript can render (read, search,
   // command, edit, create, multi-edit, failure), so the whole log styling can be inspected in a
   // single screen without a Roblox Studio connection.
@@ -193,6 +196,43 @@ async function* fakeStream(request: LlmRequest, fallback: FakeScript, slowDelay:
 
   if (script === 'studio-edit') {
     yield { type: 'text_delta', text: 'Đã cập nhật Combat.lua và Config.lua.' };
+    yield { type: 'finish', reason: 'stop' };
+    return;
+  }
+
+  if (script === 'studio-batch-edit') {
+    // Two mutating calls, one per round (the loop needs each result back before asking again). Both
+    // belong to the same turn, so `POST /undo-turn` gets two callIds: exactly the batch case where a
+    // single drifted target must refuse the WHOLE turn instead of half-restoring it.
+    const batch: Array<{ id: string; args: Record<string, unknown> }> = [
+      {
+        id: 'fake_batch_1',
+        args: {
+          file_path: 'ServerScriptService.MorphiE2E',
+          datamodel_type: 'Edit',
+          edits: [{ old_string: 'local V = 1\nreturn V', new_string: 'local V = 2\nreturn V' }],
+        },
+      },
+      {
+        id: 'fake_batch_2',
+        args: {
+          file_path: 'ServerScriptService.MorphiE2EB',
+          datamodel_type: 'Edit',
+          edits: [{ old_string: 'local W = 1\nreturn W', new_string: 'local W = 2\nreturn W' }],
+        },
+      },
+    ];
+    const pendingBatch = batch.find((entry) => !answered.has(entry.id));
+    if (pendingBatch !== undefined) {
+      yield { type: 'tool_call_start', callId: pendingBatch.id, name: 'studio.multi_edit' };
+      if (signal.aborted) return;
+      yield { type: 'tool_call_delta', callId: pendingBatch.id, argsDelta: JSON.stringify(pendingBatch.args) };
+      if (signal.aborted) return;
+      yield { type: 'tool_call_end', callId: pendingBatch.id, name: 'studio.multi_edit', args: pendingBatch.args };
+      yield { type: 'finish', reason: 'tool_calls' };
+      return;
+    }
+    yield { type: 'text_delta', text: 'Đã sửa hai script MorphiE2E và MorphiE2EB trong cùng một lượt.' };
     yield { type: 'finish', reason: 'stop' };
     return;
   }

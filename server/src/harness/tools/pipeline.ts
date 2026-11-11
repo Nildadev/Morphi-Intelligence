@@ -5,7 +5,7 @@ import type { SpillStore } from '../spill/store';
 import type { ApprovalService } from './approval';
 import type { ToolRegistry } from './registry';
 import { extractTargets, hashArgs, type CheckpointStore } from '../checkpoints/store';
-import { isRestorable, snapshotPreState } from '../checkpoints/snapshot';
+import { isRestorable, snapshotPostState, snapshotPreState } from '../checkpoints/snapshot';
 import type { ToolContext, ToolDefinition, ToolImage, ToolResultStatus, ToolRunContext, ToolRunResult } from './types';
 import { isToolImageOutput } from './types';
 
@@ -375,6 +375,13 @@ export class ToolPipeline {
     if (snapshotted) {
       try {
         const restorable = preState !== null && isRestorable(preState);
+        // Phase 5: re-read the targets now that the call landed. `restore` compares the LIVE content
+        // with this, so a hand edit made after the turn is refused instead of being overwritten —
+        // without it the post-turn content is indistinguishable from a later edit. Only worth a
+        // round trip when an inverse exists at all; best-effort, never throws.
+        const postState = restorable && preState !== null
+          ? await snapshotPostState(context.mcp, preState, context.signal)
+          : null;
         this.checkpoints!.record({
           sessionId: context.sessionId,
           label: `${tool.presentation.label} · ${tool.name}`,
@@ -385,6 +392,7 @@ export class ToolPipeline {
             targets: extractTargets(call.args),
             outcome: result.status === 'done' ? 'ok' : result.status === 'cancelled' ? 'cancelled' : 'error',
             preState,
+            postState,
             restorable,
             // Shown to the user verbatim, so it names the actual limitation instead of a generic
             // "cannot undo" — the snapshot module already wrote the precise reason.

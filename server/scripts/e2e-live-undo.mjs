@@ -1,8 +1,8 @@
 // HTTP end-to-end for the git-like undo path — the ONE check the unit suite cannot make.
 //
 // It drives the real server over HTTP against a LIVE Roblox Studio place, with the fake LLM emitting
-// the `studio-real-edit` script (one `studio.multi_edit` that rewrites an existing script), then
-// reads the script back through Studio's OWN MCP server so the assertion never trusts our own API.
+// real `studio.multi_edit` calls, then reads the scripts back through Studio's OWN MCP server so the
+// assertions never trust our own API.
 //
 // Why it exists: the app's `ServiceMcpGateway` publishes the real tools PREFIXED
 // (`studio.multi_edit`) while forwarding the real schemas. Snapshot/restore must therefore decide
@@ -11,22 +11,32 @@
 // two field bugs: a `multi_edit` fixture missing the required `datamodel_type`, and the stream route
 // silently dropping `permissionMode`, which made every `ask`-risk tool end as APPROVAL_DENIED).
 //
+// Two scenarios, because they prove different contracts:
+//   1. single  — one call, one checkpoint, undo restores it and the live source reads back exactly;
+//   2. batch    — TWO calls in ONE turn, and the turn undo must be all-or-nothing: with one target
+//                 gone, NOTHING is written (the untouched script keeps the turn's new text), and
+//                 once the target is back the whole turn restores in one request.
+//
 // Usage (Node, from `server/`):
 //   1. launch: MORPHI_FAKE_LLM=1 MORPHI_FAKE_SCRIPT=studio-real-edit MORPHI_LIVE_STUDIO=1 \
 //              MORPHI_PORT=3099 MORPHI_TOKEN=faketest MORPHI_DB_PATH=<tmp>.db npx ts-node src/index.ts
 //   2. POST /api/mcp/reconnect (the gateway connects lazily) until /api/mcp/status says
 //      `connected:true, studioLinked:true`
 //   3. node scripts/e2e-live-undo.mjs
-// It seeds `ServerScriptService.MorphiE2E` itself and leaves the place as it found it.
+// It seeds its own fixture scripts and destroys them again, so the place is left as it was found.
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 const BASE = process.env.MORPHI_E2E_BASE ?? 'http://127.0.0.1:3099';
 const TOKEN = process.env.MORPHI_E2E_TOKEN ?? 'faketest';
 const STUDIO_MCP = process.env.MORPHI_STUDIO_MCP ?? 'C:/Users/nil/AppData/Local/Roblox/mcp.bat';
-const SCRIPT = 'ServerScriptService.MorphiE2E';
-const V1 = 'local V = 1\nreturn V';
-const V2 = 'local V = 2\nreturn V';
+
+const A = 'ServerScriptService.MorphiE2E';
+const B = 'ServerScriptService.MorphiE2EB';
+const A1 = 'local V = 1\nreturn V';
+const A2 = 'local V = 2\nreturn V';
+const B1 = 'local W = 1\nreturn W';
+const B2 = 'local W = 2\nreturn W';
 
 let failures = 0;
 function check(label, ok, detail = '') {
@@ -46,7 +56,7 @@ async function api(method, path, body) {
   return { status: res.status, body: json };
 }
 
-/** One Studio MCP session per call: list of { name, source } reads and (optionally) a create. */
+/** One Studio MCP session per operation: every call below talks to Studio directly. */
 async function withStudio(run) {
   const transport = new StdioClientTransport({ command: 'cmd.exe', args: ['/c', STUDIO_MCP] });
   const client = new Client({ name: 'morphi-e2e', version: '1.0.0' }, { capabilities: {} });
@@ -65,26 +75,63 @@ function sourceOf(result) {
   return { ok: true, source };
 }
 
-const readLive = () => withStudio(async (client) => sourceOf(await client.callTool({
+const readLive = (path) => withStudio(async (client) => sourceOf(await client.callTool({
   name: 'script_read',
-  arguments: { target_file: SCRIPT, should_read_entire_file: true },
+  arguments: { target_file: path, should_read_entire_file: true },
 })));
 
-async function seed() {
-  const current = await readLive();
-  if (current.ok && current.source === V1) return current;
-  // `multi_edit` appends on an empty `old_string`, so only a MISSING script is created that way; an
-  // existing script is reset by replacing its exact current text.
+/** Write a script to an exact source: create when missing, exact-replace when it exists. */
+async function writeLive(path, source) {
+  const current = await readLive(path);
   await withStudio((client) => client.callTool({
     name: 'multi_edit',
     arguments: {
-      file_path: SCRIPT,
+      file_path: path,
       datamodel_type: 'Edit',
-      ...(current.ok && current.source !== '' ? {} : { className: 'Script' }),
-      edits: [{ old_string: current.ok ? current.source : '', new_string: V1 }],
+      ...(current.ok ? {} : { className: 'Script' }),
+      edits: [{ old_string: current.ok ? current.source : '', new_string: source }],
     },
   }));
-  return readLive();
+  const after = await readLive(path);
+  return after.ok && after.source === source;
+}
+
+async function destroyLive(path) {
+  await withStudio((client) => client.callTool({
+    name: 'execute_luau',
+    arguments: {
+      datamodel_type: 'Edit',
+      code: `local segs = {${path.split('.').map((segment) => JSON.stringify(segment)).join(', ')}}\n`
+        + 'local root = game:GetService(segs[1])\n'
+        + 'for i = 2, #segs do\n  if root == nil then break end\n  root = root:FindFirstChild(segs[i])\nend\n'
+        + 'if root == nil then return "missing" end\nroot:Destroy()\nreturn "ok"',
+    },
+  }));
+}
+
+/** Stream one turn and return the raw SSE text (the frames are asserted by the server suite). */
+async function turn(sessionId, message) {
+  const res = await fetch(`${BASE}/api/chat/stream`, {
+    method: 'POST',
+    headers: { 'x-morphi-token': TOKEN, 'content-type': 'application/json' },
+    body: JSON.stringify({ sessionId, message, model: 'fake-tools', permissionMode: 'full' }),
+  });
+  return { status: res.status, sse: await res.text() };
+}
+
+async function newSession(name) {
+  const project = await api('POST', '/api/projects', { name: `${name}-${Date.now()}` });
+  const session = await api('POST', '/api/sessions', { projectId: project.body.id, model: 'fake-tools' });
+  return session.body.id;
+}
+
+/** The callIds of the restorable checkpoints this turn recorded. */
+async function restorableCallIds(sessionId) {
+  const listed = await api('GET', `/api/sessions/${sessionId}/checkpoints`);
+  const rows = Array.isArray(listed.body) ? listed.body : [];
+  const restorable = rows.filter((row) => row.manifest?.restorable === true);
+  const callIds = [...new Set(restorable.map((row) => row.manifest?.callId ?? row.callId).filter(Boolean))];
+  return { rows, restorable, callIds };
 }
 
 const status = await api('GET', '/api/mcp/status');
@@ -92,44 +139,82 @@ check('MCP connected + Studio linked', status.body?.connected === true && status
   `${status.body?.toolCount} tools, studio ${status.body?.studio?.name}`);
 if (status.body?.connected !== true) { console.log('aborting: no live Studio'); process.exit(1); }
 
-const before = await seed();
-check('seed script reads as v1', before.ok && before.source === V1, JSON.stringify(before.source));
+// ---------------------------------------------------------------------------------------------
+// Scenario 1 — single call, single checkpoint
+// ---------------------------------------------------------------------------------------------
+console.log('\n[1] single-call turn');
+check('seed script A reads as v1', await writeLive(A, A1), A1);
 
-const project = await api('POST', '/api/projects', { name: `e2e-undo-${Date.now()}` });
-check('project created', project.status === 201, `status ${project.status}`);
-const session = await api('POST', '/api/sessions', { projectId: project.body.id, model: 'fake-tools' });
-check('session created', session.status === 201, `status ${session.status}`);
-const sessionId = session.body.id;
+const singleSession = await newSession('e2e-undo');
+const singleTurn = await turn(singleSession, '/script studio-real-edit');
+check('turn stream finished', singleTurn.status === 200,
+  `status ${singleTurn.status}, ${singleTurn.sse.length} bytes, multi_edit seen: ${/multi_edit/.test(singleTurn.sse)}`);
 
-// `permissionMode: full` bypasses the approval gate (multi_edit asks under `ask`/`balanced`), so the
-// turn settles without a modal.
-const turn = await fetch(`${BASE}/api/chat/stream`, {
-  method: 'POST',
-  headers: { 'x-morphi-token': TOKEN, 'content-type': 'application/json' },
-  body: JSON.stringify({ sessionId, message: '/script studio-real-edit', model: 'fake-tools', permissionMode: 'full' }),
-});
-const sse = await turn.text();
-check('turn stream finished', turn.status === 200, `status ${turn.status}, ${sse.length} bytes, multi_edit seen: ${/multi_edit/.test(sse)}`);
+const singleAfter = await readLive(A);
+check('live script A mutated to v2 by the turn', singleAfter.ok && singleAfter.source === A2, JSON.stringify(singleAfter.source));
 
-const afterEdit = await readLive();
-check('live script mutated to v2 by the turn', afterEdit.ok && afterEdit.source === V2, JSON.stringify(afterEdit.source));
+const single = await restorableCallIds(singleSession);
+check('checkpoint recorded as restorable', single.restorable.length > 0,
+  `${single.rows.length} checkpoint(s): ${single.rows.map((row) => `restorable=${row.manifest?.restorable}`).join(', ')}`);
+if (single.restorable.length === 0) console.log(JSON.stringify(single.rows, null, 2).slice(0, 2000));
 
-const checkpoints = await api('GET', `/api/sessions/${sessionId}/checkpoints`);
-const rows = Array.isArray(checkpoints.body) ? checkpoints.body : [];
-const restorable = rows.filter((row) => row.manifest?.restorable === true);
-check('checkpoint recorded as restorable', restorable.length > 0,
-  `${rows.length} checkpoint(s): ${rows.map((row) => `restorable=${row.manifest?.restorable}`).join(', ')}`);
-if (restorable.length === 0) console.log(JSON.stringify(rows, null, 2).slice(0, 2000));
+const singleUndo = await api('POST', `/api/sessions/${singleSession}/undo-turn`, { callIds: single.callIds });
+check('undo-turn 200', singleUndo.status === 200, JSON.stringify(singleUndo.body).slice(0, 400));
+check('undo reported a restore', singleUndo.body?.status === 'restored', JSON.stringify(singleUndo.body).slice(0, 600));
 
-const callIds = [...new Set(restorable.map((row) => row.manifest?.callId ?? row.callId).filter(Boolean))];
-check('callIds collected for undo', callIds.length > 0, callIds.join(', '));
+const singleRestored = await readLive(A);
+check('live script A back to v1', singleRestored.ok && singleRestored.source === A1, JSON.stringify(singleRestored.source));
 
-const undo = await api('POST', `/api/sessions/${sessionId}/undo-turn`, { callIds });
-check('undo-turn 200', undo.status === 200, `status ${undo.status} ${JSON.stringify(undo.body).slice(0, 400)}`);
-check('undo reported a restore', undo.body?.status === 'restored', JSON.stringify(undo.body).slice(0, 600));
+// ---------------------------------------------------------------------------------------------
+// Scenario 2 — two calls in one turn; undo is all-or-nothing
+// ---------------------------------------------------------------------------------------------
+console.log('\n[2] batch turn (2 calls, 1 turn)');
+check('seed scripts A and B at v1', (await writeLive(A, A1)) && (await writeLive(B, B1)), `${A1} | ${B1}`);
 
-const afterUndo = await readLive();
-check('live script back to v1', afterUndo.ok && afterUndo.source === V1, JSON.stringify(afterUndo.source));
+const batchSession = await newSession('e2e-batch-undo');
+const batchTurn = await turn(batchSession, '/script studio-batch-edit');
+check('batch turn stream finished', batchTurn.status === 200,
+  `${batchTurn.sse.length} bytes, multi_edit seen: ${/multi_edit/.test(batchTurn.sse)}`);
+
+const batchA = await readLive(A);
+const batchB = await readLive(B);
+check('both scripts mutated to v2', batchA.source === A2 && batchB.source === B2, `${JSON.stringify(batchA.source)} | ${JSON.stringify(batchB.source)}`);
+
+const batch = await restorableCallIds(batchSession);
+check('both calls recorded as restorable checkpoints', batch.restorable.length === 2,
+  `${batch.restorable.length} restorable: ${batch.callIds.join(', ')}`);
+
+// Break ONE target: a missing script is unreadable, which the strict (turn-level) preview treats as
+// drift. The other target is untouched and still holds the turn's own text.
+await destroyLive(B);
+const refused = await api('POST', `/api/sessions/${batchSession}/undo-turn`, { callIds: batch.callIds });
+check('undo-turn refuses the whole turn', refused.body?.status === 'refused', JSON.stringify(refused.body).slice(0, 600));
+check('drift names the broken target', Array.isArray(refused.body?.drift) && refused.body.drift.some((line) => line.includes('MorphiE2EB')),
+  JSON.stringify(refused.body?.drift));
+check('nothing was written (restored is empty)', Array.isArray(refused.body?.restored) && refused.body.restored.length === 0);
+
+const afterRefusal = await readLive(A);
+check('untouched script A still holds the turn output (v2)', afterRefusal.ok && afterRefusal.source === A2, JSON.stringify(afterRefusal.source));
+
+// Put the target back exactly as the turn left it, then the same batch must restore both in one call.
+check('re-created script B at v2', await writeLive(B, B2), B2);
+const batchUndo = await api('POST', `/api/sessions/${batchSession}/undo-turn`, { callIds: batch.callIds });
+check('batch undo-turn 200', batchUndo.status === 200, JSON.stringify(batchUndo.body).slice(0, 400));
+check('batch undo restored both checkpoints', batchUndo.body?.status === 'restored' && (batchUndo.body?.restored ?? []).length === 2,
+  JSON.stringify(batchUndo.body).slice(0, 600));
+
+const finalA = await readLive(A);
+const finalB = await readLive(B);
+check('both scripts back to v1', finalA.source === A1 && finalB.source === B1, `${JSON.stringify(finalA.source)} | ${JSON.stringify(finalB.source)}`);
+
+// ---------------------------------------------------------------------------------------------
+// Cleanup — the place must not keep probe fixtures
+// ---------------------------------------------------------------------------------------------
+await destroyLive(A);
+await destroyLive(B);
+const goneA = await readLive(A);
+const goneB = await readLive(B);
+check('probe scripts removed from the place', !goneA.ok && !goneB.ok);
 
 console.log(failures === 0 ? '\nE2E OK' : `\nE2E FAILED (${failures})`);
 process.exit(failures === 0 ? 0 : 1);

@@ -309,4 +309,84 @@ describe('restoreTurn - the Undo button on the script summary', () => {
             .resolves.toEqual({ ok: false, reason: 'STUDIO_NOT_CONNECTED' });
         expect(gateway.writes).toEqual([]);
     });
+
+    /**
+     * Phase 5 regression, caught LIVE: drift compared the live source with the PRE-state only, and
+     * after a successful mutation the live source legitimately differs from it — so a hand edit made
+     * AFTER the turn (script at `local V = 99` while the turn wrote `local V = 2`) previewed as
+     * `clean: true` and the undo silently overwrote it. The checkpoint now also stores what the turn
+     * WROTE (`postState`), and drift diffs against that: live == post ⇒ invert; live == pre ⇒ no-op;
+     * neither ⇒ refuse.
+     */
+    it('refuses a hand edit made after the turn instead of silently overwriting it', async () => {
+        const store = new CheckpointStore(db());
+        store.record({
+            sessionId: 's1',
+            label: 'edit A',
+            manifest: {
+                tool: 'studio.write_script',
+                callId: 'call_a',
+                argsHash: 'h',
+                targets: ['A'],
+                outcome: 'ok',
+                preState: { entries: [{ kind: 'script', path: 'A', source: 'old' }], inverse: [{ tool: 'script_write', path: 'A', source: 'old' }], notes: [] },
+                postState: { entries: [{ kind: 'script', path: 'A', source: 'new' }], notes: [] },
+                restorable: true,
+                restoreReason: 'ok',
+            },
+        });
+        // The live source is neither the turn's output (`new`) nor the pre-state (`old`): someone
+        // edited it by hand after the turn.
+        const gateway = mcp({ live: 'hand edit' });
+
+        const result = await restoreTurn(gateway, store, 's1', ['call_a']);
+
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(result.result.status).toBe('refused');
+        expect(result.result.drift[0]).toContain('sửa tay');
+        expect(gateway.writes).toEqual([]);
+    });
+
+    it('restores when the live source still matches what the turn wrote', async () => {
+        const store = new CheckpointStore(db());
+        store.record({
+            sessionId: 's1',
+            label: 'edit A',
+            manifest: {
+                tool: 'studio.write_script',
+                callId: 'call_a',
+                argsHash: 'h',
+                targets: ['A'],
+                outcome: 'ok',
+                preState: { entries: [{ kind: 'script', path: 'A', source: 'old' }], inverse: [{ tool: 'script_write', path: 'A', source: 'old' }], notes: [] },
+                postState: { entries: [{ kind: 'script', path: 'A', source: 'new' }], notes: [] },
+                restorable: true,
+                restoreReason: 'ok',
+            },
+        });
+        const gateway = mcp({ live: 'new' });
+
+        const result = await restoreTurn(gateway, store, 's1', ['call_a']);
+
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(result.result.status).toBe('restored');
+        expect(gateway.writes).toEqual([{ tool: 'studio.write_script', args: { path: 'A', source: 'old' } }]);
+    });
+
+    it('keeps the pre-state behaviour for checkpoints recorded before post-state capture', async () => {
+        // History must stay restorable: an old manifest has no `postState` at all, so drift falls
+        // back to comparing with the pre-state (the old, weaker rule) instead of refusing forever.
+        const store = new CheckpointStore(db());
+        recordTurn(store, 'call_a', 'A', 'old-a');
+        const gateway = mcp({ live: 'new' });
+
+        const result = await restoreTurn(gateway, store, 's1', ['call_a']);
+
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(result.result.status).toBe('restored');
+        expect(gateway.writes).toEqual([{ tool: 'studio.write_script', args: { path: 'A', source: 'old-a' } }]);
+    });
 });
