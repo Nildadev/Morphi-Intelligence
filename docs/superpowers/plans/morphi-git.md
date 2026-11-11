@@ -123,51 +123,128 @@ Implemented:
 - `GET /api/sessions/:id/checkpoints` lists a session's checkpoints.
 - Tests cover store round-trip/hash, target extraction, pipeline recording (mutating only), and the route.
 
-Not yet implemented (deliberately not faked):
+Not yet implemented at the time (all since completed — see Phase 3/4 below):
 
 - ~~Pre-mutation state snapshots (script source, instance properties) via MCP reads.~~ **Done in Phase 3.**
 - ~~Inverse/restore engine (Phase 3)~~ **Done in Phase 3.**
-- Diff rendering and the history browser UI (Phase 4).
+- ~~Client history browser + diff rendering (Phase 4)~~ **Done in Phase 4.**
 
-## Phase 3 — implemented: pre-state snapshots + restore engine
+## Phase 3 — implemented: pre-state snapshots + restore engine (live-verified on real Studio)
 
 Implemented:
 
+- `server/src/harness/checkpoints/studioWire.ts` — the ONLY module that knows the real Studio MCP
+  wire shape. Lives separately so the engine never hardcodes tool names.
+  - `readScriptSource` / `writeScriptSource` / `inspectInstance` / `deleteInstance` /
+    `setInstanceProperties`, plus `restorableProperties` and `propertiesFrom` / `scriptSourceFrom`
+    parsers.
+  - **Measured live on `Place1`** (Roblox Studio MCP server, 36 tools): the real surface is
+    `script_read` (`target_file`, returns line-numbered `N→` text), `multi_edit` (`file_path`,
+    `edits:[{old_string,new_string}]`, `datamodel_type`), `inspect_instance` (returns a JSON
+    *text* string with a `.properties` bag), `execute_luau`. There is NO `studio.write_script` /
+    `studio.delete_instance` / `studio.set_properties` — those were the *guessed* names the
+    engine originally used and which failed on a real place (caught only by the live probe).
+  - Legacy `studio.*` aliases are still accepted (fake/E2E gateway returns a raw `{source}` /
+    `{properties}` object), so the 696/727 server tests keep passing unchanged.
 - `server/src/harness/checkpoints/snapshot.ts`
   - `snapshotPreState(mcp, toolName, args)` runs BEFORE the mutating call and reads what the
-    call is about to overwrite:
-    - script writes → `studio.script_read` (also `studio.read_script`, `script_read`), storing
-      the exact old source;
-    - inserts (`insert_asset` / `insert_instance`, and a `create_script` with no readable old
-      source) → the inverse is a delete of the inserted path;
-    - other mutating tools → `studio.inspect_instance` property bag when available.
-  - `studio.multi_edit` expands into one entry/inverse per touched path.
+    call is about to overwrite, via `studioWire`:
+    - script writes → `readScriptSource` (strips the `N→` gutter);
+    - inserts (`insert_asset` / `insert_instance`, and a create with no readable old source) →
+      the inverse is a delete of the inserted path (Luau `:Destroy()`);
+    - other mutating tools → `inspectInstance` property bag, filtered by `restorableProperties`
+      (only scalars round-trip safely; see below).
   - `isRestorable` is true only when EVERY touched target produced an inverse step. A single
     unreadable target downgrades the whole checkpoint — a partial restore is not an undo.
   - Every refusal writes a specific Vietnamese reason (which tool, which path, why).
-- `CheckpointManifest.preState` is now a real snapshot (or null), and `restorable` is derived
-  from it rather than hardcoded false. `ToolPipeline` takes the snapshot before executing and
-  records it after (best-effort: a failed snapshot never blocks the user's call).
 - `server/src/harness/checkpoints/restore.ts`
   - `previewRestore` re-reads the live workspace and returns the inverse plan plus drift notes;
     refuses `NOT_FOUND`, `NOT_RESTORABLE`, `STUDIO_NOT_CONNECTED`, `ALREADY_RESTORED`,
     `IN_PROGRESS`.
-  - `applyRestore` writes each inverse, then RE-READS to verify. A tool answering OK is not
-    proof: mismatched read-back marks the checkpoint `restore-failed`.
+  - `applyRestore` writes each inverse (via `studioWire`), then RE-READS to verify. A tool
+    answering OK is not proof: mismatched read-back marks the checkpoint `restore-failed`.
   - Drift found in the preview is a refusal, so a hand edit made after the checkpoint is never
     overwritten (plan safety rule).
+  - `restoreTurn` batches several call ids as ONE transaction: previews every candidate, and if
+    ANY drifts it refuses the whole turn before writing — half-restoring a turn is worse than
+    refusing.
+  - `RestoreSkipped[]` threads per-key property refusals (see below) so a refused property is
+    reported, never counted as a mismatch.
   - Status is one-way: `recorded` → `restoring` → `restored` | `restore-failed`.
-- Routes: `GET /api/sessions/:id/checkpoints/:checkpointId/restore` (preview, read-only) and
-  `POST …/restore` (apply). A checkpoint from another session is a 404.
-- Tests: 10 snapshot, 12 restore-engine, 1 pipeline (restorable path), 1 route (preview + apply
-  + audit-only refusal + cross-session 404). Server suite 690/690.
+- Routes: `GET /api/sessions/:id/checkpoints/:checkpointId/restore` (preview, read-only),
+  `POST …/restore` (apply), `POST /api/sessions/:id/undo-turn` (batch restore by call ids).
+  A checkpoint from another session is a 404.
+- `server/src/harness/checkpoints/liveProbe.test.ts` — **gated behind `MORPHI_LIVE_STUDIO=1`**
+  (spawns the real `StudioMCP.exe`, writes to the open place, cleans up after itself). This is the
+  test that caught three bugs fakes could never expose (see "Live-verified bugs" below). CI stays
+  green without it.
 
-Still not implemented (Phase 4):
+Live-verified bugs (caught by the probe, not by fakes):
 
-- Client UI for previewing/triggering a restore from the transcript or a history browser.
-- Property drift comparison before restore (only script source is diffed today; the preview says
-  so in its notes instead of implying a check that did not run).
-- Deleted-instance recreation (needs children/properties capture, a separate snapshot shape).
+1. `multi_edit` with `old_string: ''` **appends**, it does not replace — a "full rewrite" would
+   have corrupted every restored script. `writeScriptSource` reads current source and uses it as
+   `old_string`; empty string is used only to create.
+2. `deleteInstance` reported success while deleting nothing (returned `"deleted"` unconditionally
+   and emitted a JSON-array literal, which is not valid Luau). Now emits a proper table, uses
+   `GetService`/`FindFirstChild`, and verifies the instance is gone.
+3. Child lookup by `root[name]` threw on a missing name, making "gone" indistinguishable from
+   "failed". Now resolves via `FindFirstChild` (`GetService` for the service segment).
+4. Property restore was completely broken: `inspect_instance` returns a lossy bag (a plain Part:
+   36 keys, only 16 writable; 20 throw — pseudo-paths, Vector3/enum/BrickColor string round-trips,
+   capability-locked). The first fix kept only number+boolean scalars; the final fix keeps ALL
+   scalars (strings included) and uses per-key `pcall` isolation, reporting each refusal with
+   Studio's own message via `HttpService:JSONEncode`. Verified live: `CollisionGroup "Default"`
+   → mutated → restored, with `skipped` non-empty (incl. `UniqueId`).
+
+## Phase 4 — implemented: history UI + drift visibility (live-verified)
+
+Implemented:
+
+- `server/src/routes/sessions.ts` — `POST /api/sessions/:id/undo-turn` covered by `routes.test.ts`
+  (fake MCP): empty list → 400, `NOTHING_TO_RESTORE` → 409, cross-call 404.
+- `client/src/lib/api.ts` — `checkpoints`, `previewRestore`, `restore`, `undoTurn`.
+- `client/src/components/chat/TurnWorkSummary.tsx` — framed "N script thay đổi +A −D" row at the
+  end of a turn, collapsed by default, with the **Undo** button (Phase 4 continued commit
+  `2a1eac0`).
+- `client/src/components/chat/HistoryPanel.tsx` — checkpoint browser: lists checkpoints newest
+  first (time, tool, first target, server `restoreReason`), two-step preview → confirm restore,
+  a dirty preview disables confirm so hand edits are not overwritten. First tests added
+  (`HistoryPanel.test.tsx`).
+- `client/src/components/chat/RestoreNotice.tsx` (new) — inline transcript alert +
+  pure `undoNoticeOf(result)`; shows drift / partial-failure / skipped verbatim, dismissible.
+  `ChatInterface.handleUndoTurn` sets a transcript notice for drift/partial/skipped (the toast is
+  kept only as a pointer and for success). `types.ts` adds `skipped?: RestoreSkipped[]`; `vi.ts`
+  adds `undoSkipped`, `dismissNotice` (both consumed — no orphan keys).
+- `Rail.tsx` 'history' action → `SidePanel` already wired (verified, not rebuilt).
+
+Property drift comparison: `detectDrift` re-inspects every property target and compares the keys
+the snapshot recorded; a changed key is drift for a batch (turn) restore. Script source is diffed
+exactly. This is no longer "only script source" — the note in the preview now says what it actually
+checked.
+
+## Remaining gaps (documented, intentionally not done)
+
+- **True HTTP end-to-end undo through the running app** is not run: it needs an authenticated
+  launch. The route is covered by `routes.test.ts` with a fake MCP, and the engine is covered live
+  by `liveProbe.test.ts`. Wiring a live session through the Electron app would validate the full
+  path but is out of scope for this pass.
+- **BrickColor / Size / CFrame / UniqueId surface as `skipped`** with Studio's message rather than
+  being silently dropped or falsely restored. Making them restorable would need typed reconstruction
+  (Vector3/Color3/BrickColor), which the wire does not give us — `inspect_instance` serialises them
+  as strings that Luau rejects. Per-key isolation already reports the refusal instead of failing the
+  whole restore.
+- **Deleted-instance recreation** from children/properties is not attempted: an inserted instance's
+  inverse is a delete (reliable), not a recreate, so undoing an insert removes it rather than
+  rebuilding its subtree. Capturing children for recreation would need a separate snapshot shape.
+
+## Verification gate (last green run)
+
+- `server tsc --noEmit` clean; `server vitest` **727 passed / 4 skipped** (4 skip = live probe).
+- `MORPHI_LIVE_STUDIO=1 npx vitest run src/harness/checkpoints/liveProbe.test.ts` → **4/4 passed**
+  on real `Place1` (tools present / no guessed names; script restore snapshot→mutate→undo→read-back;
+  property restore incl. string `CollisionGroup` + `skipped` non-empty).
+- `client tsc -b` clean; `client vitest` **631 passed**.
+- `Place1` verified CLEAN after every live run (no leftover probe scripts/instances).
 
 ## Post-Phase-2 notes (live verified)
 
