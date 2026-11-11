@@ -335,4 +335,88 @@ describe.skipIf(!gated)('live Studio wire (MORPHI_LIVE_STUDIO=1)', () => {
       live.close();
     }
   }, 90000);
+
+  it('reconstructs Vector3/BrickColor from the lossy inspect string and restores them', async () => {
+    const { gateway, live } = await liveGateway();
+    const db = createTestDb();
+    db.prepare('INSERT INTO projects (id, name, created_at, last_active) VALUES (?, ?, ?, ?)').run('p1', 'P', 1, 1);
+    db.prepare('INSERT INTO sessions (id, project_id, created_at, last_updated) VALUES (?, ?, ?, ?)').run('s1', 'p1', 1, 1);
+    const store = new CheckpointStore(db);
+    const name = `MorphiProbe${probeId()}`;
+    const path = `Workspace.${name}`;
+
+    const luau = async (code: string): Promise<string> => String(await gateway.callTool('execute_luau', { code, datamodel_type: 'Edit' }));
+    const exists = async (): Promise<boolean> =>
+      (await luau(`return game:GetService("Workspace"):FindFirstChild(${JSON.stringify(name)}) == nil and "missing" or "exists"`)).trim() === 'exists';
+
+    try {
+      // 1. A Part with a Vector3 Size and a BrickColor set to a NAMED colour.
+      const created = await luau([
+        'local part = Instance.new("Part")',
+        `part.Name = ${JSON.stringify(name)}`,
+        'part.Size = Vector3.new(4, 2, 1)',
+        'part.BrickColor = BrickColor.new("Bright red")',
+        'part.Parent = game:GetService("Workspace")',
+        'return "ok"',
+      ].join('\n'));
+      expect(created.trim()).toBe('ok');
+
+      // 2. The snapshot stores the lossy serialisation (Size as "4, 2, 1", BrickColor as "Bright red").
+      const preState = await snapshotPreState(gateway, 'studio.set_property', { path });
+      const entry = preState.entries.find((e) => e.kind === 'properties');
+      expect(entry?.kind).toBe('properties');
+      if (entry?.kind !== 'properties') return;
+      expect(entry.properties.Size).toBe('4, 2, 1');
+      expect(entry.properties.BrickColor).toBe('Bright red');
+
+      const checkpoint = store.record({
+        sessionId: 's1',
+        label: 'live vector/brickcolor edit',
+        manifest: {
+          tool: 'studio.set_property',
+          callId: 'live-vec-call',
+          argsHash: 'h',
+          targets: [path],
+          outcome: 'ok',
+          preState,
+          restorable: true,
+          restoreReason: 'ok',
+        },
+      });
+
+      // 3. Mutate both via Luau so the restore is proven non-trivial.
+      const mutated = await luau([
+        `local part = game:GetService("Workspace"):FindFirstChild(${JSON.stringify(name)})`,
+        'if part == nil then return "error: not found" end',
+        'part.Size = Vector3.new(8, 8, 8)',
+        'part.BrickColor = BrickColor.new("Bright blue")',
+        'return "ok"',
+      ].join('\n'));
+      expect(mutated.trim()).toBe('ok');
+      const dirty = await inspectInstance(gateway, path);
+      expect(dirty?.Size).toBe('8, 8, 8');
+      expect(dirty?.BrickColor).toBe('Bright blue');
+
+      // 4. Restore re-applies the reconstructed literals (Vector3.new / BrickColor.new).
+      const restored = await applyRestore(gateway, store, checkpoint.id);
+      expect(restored.ok).toBe(true);
+      if (!restored.ok) return;
+      expect(restored.result.status).toBe('restored');
+
+      // 5. Studio itself must hold the OLD Size and BrickColor again — the reconstruction worked.
+      const after = await inspectInstance(gateway, path);
+      expect(after?.Size).toBe('4, 2, 1');
+      expect(after?.BrickColor).toBe('Bright red');
+      expect(store.get(checkpoint.id)?.status).toBe('restored');
+    } finally {
+      const cleaned = await deleteInstance(gateway, path).catch((error) => {
+        console.error('cleanup failed for', path, error instanceof Error ? error.message : error);
+        return false;
+      });
+      expect(cleaned, 'the probe part must be removed from the place').toBe(true);
+      expect(await exists(), 'the probe part must be gone after cleanup').toBe(false);
+      expect(await inspectInstance(gateway, path)).toBeNull();
+      live.close();
+    }
+  }, 90000);
 });

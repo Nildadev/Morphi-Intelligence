@@ -22,6 +22,10 @@ export const FAKE_SCRIPTS = [
   // Workspace-change demo: calls a fake `studio.edit_script` so the turn-work summary
   // ("N tệp thay đổi +A −D") can be exercised end-to-end without a Roblox Studio connection.
   'studio-edit',
+  // Real-end-to-end probe: calls the REAL `studio.multi_edit` on the connected place so the full
+  // HTTP path (POST /chat/stream → pipeline snapshot → Studio mutate → checkpoint → POST /undo-turn
+  // → Studio restore) runs against live Studio, not a fake tool. Used by MORPHI_LIVE_STUDIO e2e.
+  'studio-real-edit',
   // Design tour: one turn that calls every row shape the transcript can render (read, search,
   // command, edit, create, multi-edit, failure), so the whole log styling can be inspected in a
   // single screen without a Roblox Studio connection.
@@ -130,6 +134,30 @@ async function* fakeStream(request: LlmRequest, fallback: FakeScript, slowDelay:
     return;
   }
 
+  // Real-end-to-end probe: mutate an EXISTING script on the CONNECTED place via the real
+  // `studio.multi_edit` tool, so the HTTP turn → snapshot → Studio write → checkpoint → undo-turn →
+  // Studio restore path is exercised against live Studio. The path is fixed and must pre-exist (the
+  // e2e harness creates it first); editing an existing script means the snapshot captures a real old
+  // source and the checkpoint is restorable, which a create-from-empty would not prove.
+  if (script === 'studio-real-edit' && !answered.has('fake_real_edit_1')) {
+    // These args are the REAL `multi_edit` schema (measured live): `datamodel_type` is required, so
+    // a fixture without it died with `INVALID_ARGS: data must have required property
+    // 'datamodel_type'` and the whole undo probe saw a non-mutating turn. `className` is omitted
+    // because the script already exists — it is only read when multi_edit has to create one.
+    const args = {
+      file_path: 'ServerScriptService.MorphiE2E',
+      datamodel_type: 'Edit',
+      edits: [{ old_string: 'local V = 1\nreturn V', new_string: 'local V = 2\nreturn V' }],
+    };
+    yield { type: 'tool_call_start', callId: 'fake_real_edit_1', name: 'studio.multi_edit' };
+    if (signal.aborted) return;
+    yield { type: 'tool_call_delta', callId: 'fake_real_edit_1', argsDelta: JSON.stringify(args) };
+    if (signal.aborted) return;
+    yield { type: 'tool_call_end', callId: 'fake_real_edit_1', name: 'studio.multi_edit', args };
+    yield { type: 'finish', reason: 'tool_calls' };
+    return;
+  }
+
   if (script === 'studio-edit' && !answered.has('fake_edit_1')) {
     // Two edits to the SAME file: the summary must count it once (last write wins) while the
     // per-file churn reflects the final content. A second, distinct file proves the aggregate
@@ -165,6 +193,12 @@ async function* fakeStream(request: LlmRequest, fallback: FakeScript, slowDelay:
 
   if (script === 'studio-edit') {
     yield { type: 'text_delta', text: 'Đã cập nhật Combat.lua và Config.lua.' };
+    yield { type: 'finish', reason: 'stop' };
+    return;
+  }
+
+  if (script === 'studio-real-edit') {
+    yield { type: 'text_delta', text: 'Đã ghi script MorphiE2E trên place thật qua Studio MCP.' };
     yield { type: 'finish', reason: 'stop' };
     return;
   }

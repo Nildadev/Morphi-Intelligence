@@ -38,6 +38,13 @@ import type { McpGateway } from '../tools/types';
  * Tool-name resolution is preference-ordered: the real names (`script_read`, `multi_edit`,
  * `inspect_instance`) are tried first, then the legacy `studio.*` aliases (used by E2E fake tools),
  * so the same engine drives both surfaces.
+ *
+ * REAL vs LEGACY is decided by `speaksRealShape`, NOT by the name prefix: the app's own
+ * `ServiceMcpGateway` publishes the real tools PREFIXED (`studio.script_read`), so a prefix means
+ * nothing. The advertised schema is authoritative (real schemas carry `target_file` / `file_path` /
+ * `code`); an unprefixed name is the raw server and is real by definition; a prefixed schema-less
+ * entry can only be a legacy fake alias. The HTTP end-to-end caught this — the prefix heuristic
+ * made every snapshot read fail through the app gateway while all fake-gateway tests stayed green.
  */
 
 const SCRIPT_READ_CANDIDATES = ['script_read', 'studio.script_read', 'studio.read_script'] as const;
@@ -122,19 +129,56 @@ export function propertiesFrom(result: unknown): Record<string, unknown> | null 
   }
   return null; }
 
-/** Pick the first candidate the gateway actually exposes; undefined ⇒ the capability is absent. */
+/** The gateway entry worth its argument shape: name plus the schema the gateway advertises. */
+interface PickedTool {
+  name: string;
+  parameters: { properties?: Record<string, unknown> } | undefined;
+}
+
+/**
+ * Pick the first candidate the gateway actually exposes; undefined ⇒ the capability is absent.
+ * The SCHEMA comes back too, because the real-vs-legacy decision below must be made from what the
+ * tool actually accepts, not from its name (see `speaksRealShape`).
+ */
 async function pickTool(
   mcp: McpGateway,
   candidates: readonly string[],
   signal?: AbortSignal,
-): Promise<string | undefined> {
-  let available: Set<string>;
+): Promise<PickedTool | undefined> {
+  let listed: Array<{ name: string; parameters?: unknown }>;
   try {
-    available = new Set((await mcp.listTools()).map((tool) => tool.name));
+    listed = await mcp.listTools();
   } catch {
     return undefined;
   }
-  return candidates.find((name) => available.has(name));
+  for (const candidate of candidates) {
+    const tool = listed.find((entry) => entry.name === candidate);
+    if (tool !== undefined) {
+      return {
+        name: tool.name,
+        parameters: (tool.parameters ?? undefined) as PickedTool['parameters'],
+      };
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Does this gateway entry speak the REAL server's argument shape?
+ *
+ * MEASURED GOTCHA (found by the HTTP end-to-end, never by fakes): the app's own
+ * `ServiceMcpGateway` publishes the real tools as `studio.script_read` / `studio.multi_edit` —
+ * PREFIXED — while the raw server (and the live probe) uses `script_read` / `multi_edit`. A name
+ * prefix therefore says nothing about which wire shape to speak. Two signals decide, strongest
+ * first:
+ *  1. the advertised schema carries the discriminating property (`target_file`, `file_path`,
+ *     `code`) — the app gateway forwards real schemas, so this is authoritative;
+ *  2. otherwise the name itself: the raw server's names are UNPREFIXED, so an unprefixed match is
+ *     the real tool, while a prefixed schema-less match can only be a legacy fake alias.
+ */
+function speaksRealShape(tool: PickedTool, discriminatingProperty: string): boolean {
+  if (tool.parameters?.properties?.[discriminatingProperty] !== undefined) return true;
+  return !tool.name.startsWith('studio.');
 }
 
 /** Read a script's current source, or null when the tool is absent / the path cannot be read. */
@@ -147,11 +191,11 @@ export async function readScriptSource(
   if (tool === undefined) return null;
   // The real `script_read` keys on `target_file` and wants the whole file; the legacy `studio.*`
   // aliases (fake/E2E gateways) key on `path`. Sending the wrong one reads nothing back.
-  const args = tool.startsWith('studio.')
-    ? { path }
-    : { target_file: path, should_read_entire_file: true };
+  const args = speaksRealShape(tool, 'target_file')
+    ? { target_file: path, should_read_entire_file: true }
+    : { path };
   try {
-    const result = await mcp.callTool(tool, args, signal);
+    const result = await mcp.callTool(tool.name, args, signal);
     return scriptSourceFrom(result);
   } catch {
     return null;
@@ -167,7 +211,7 @@ export async function inspectInstance(
   const tool = await pickTool(mcp, INSPECT_CANDIDATES, signal);
   if (tool === undefined) return null;
   try {
-    const result = await mcp.callTool(tool, { path }, signal);
+    const result = await mcp.callTool(tool.name, { path }, signal);
     return propertiesFrom(result);
   } catch {
     return null;
@@ -194,14 +238,14 @@ export async function writeScriptSource(
   const tool = await pickTool(mcp, SCRIPT_WRITE_CANDIDATES, signal);
   if (tool === undefined) throw new Error('Studio không mở công cụ ghi script để khôi phục.');
   // The legacy aliases speak `{ path, source }`; the real `multi_edit` speaks `file_path` + `edits`.
-  if (tool.startsWith('studio.')) return mcp.callTool(tool, { path, source }, signal);
+  if (!speaksRealShape(tool, 'file_path')) return mcp.callTool(tool.name, { path, source }, signal);
 
   const current = await readScriptSource(mcp, path, signal);
   const exists = current !== null && current !== '';
   // An empty script is indistinguishable from a missing one here; appending onto nothing is exact.
   const oldString = exists ? current! : '';
   return mcp.callTool(
-    tool,
+    tool.name,
     {
       file_path: path,
       datamodel_type: DATAMODEL,
@@ -248,21 +292,22 @@ export async function deleteInstance(
   path: string,
   signal?: AbortSignal,
 ): Promise<boolean> {
-  const tool = await pickTool(mcp, LUAU_CANDIDATES, signal);
-  if (tool === undefined) throw new Error('Studio không mở công cụ xoá để khôi phục.');
-  // A legacy `studio.delete_instance` (fake gateway) takes the path directly — no Luau needed.
-  if (tool.startsWith('studio.')) {
-    const result = await mcp.callTool(tool, { path }, signal);
+  // A dedicated delete tool (never shipped by the real server) would take the path directly.
+  const dedicated = await pickTool(mcp, ['studio.delete_instance', 'studio.remove_instance'] as const, signal);
+  if (dedicated !== undefined) {
+    const result = await mcp.callTool(dedicated.name, { path }, signal);
     return !isErrorText(result);
   }
+  const tool = await pickTool(mcp, LUAU_CANDIDATES, signal);
+  if (tool === undefined) throw new Error('Studio không mở công cụ xoá để khôi phục.');
 
   const destroy = `${resolveLuau(path)}if root == nil then return "error: not found" end\nroot:Destroy()\nreturn "ok"`;
-  const result = await mcp.callTool(tool, { code: destroy, datamodel_type: DATAMODEL }, signal);
+  const result = await mcp.callTool(tool.name, { code: destroy, datamodel_type: DATAMODEL }, signal);
   if (isErrorText(result)) return false;
 
   // Verify: a destroy that threw inside pcall, or a name that reappeared, must not read as success.
   const probe = `${resolveLuau(path)}return root == nil and "missing" or "exists"`;
-  const after = await mcp.callTool(tool, { code: probe, datamodel_type: DATAMODEL }, signal);
+  const after = await mcp.callTool(tool.name, { code: probe, datamodel_type: DATAMODEL }, signal);
   return typeof after === 'string' && after.trim().toLowerCase() === 'missing';
 }
 
@@ -310,6 +355,35 @@ export function restorableProperties(bag: Record<string, unknown>): Record<strin
   return restorable;
 }
 
+/**
+ * Turn an `inspect_instance` string value into a Luau literal that re-applies, when the wire's
+ * serialisation is recoverable. MEASURED on a live `Part`: `Size`/`Color`/`Position` arrive as
+ * `"x, y, z"` (Vector3/Color3), `BrickColor` arrives as a name like `"Medium stone grey"`. Naively
+ * assigning the string fails (`Vector3 expected, got string`). For those shapes we emit a real
+ * constructor so the per-key `pcall` in `setInstanceProperties` succeeds; anything we cannot recover
+ * is left as a plain JSON string, which the `pcall` will reject and the caller will record as skipped.
+ *
+ * Only comma-triples of numbers and dotted BrickColor names are reconstructed — both are unambiguous,
+ * so a misparse cannot silently write a wrong value (it just fails the pcall and stays skipped).
+ */
+export function reconstructValue(value: unknown): string {
+  if (typeof value === 'string') {
+    const triple = value.match(/^\s*(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)\s*$/);
+    if (triple) {
+      return `Vector3.new(${triple[1]}, ${triple[2]}, ${triple[3]})`;
+    }
+    // A BrickColor name is a multi-word proper noun WITH spaces, e.g. "Bright red", "Medium stone
+    // grey". A single-word string like `CollisionGroup: "Default"` or `MaterialVariant: ""` is a real
+    // string property and must stay a plain string — reconstructing it as BrickColor.new would make
+    // Luau reject the assignment ("string expected, got BrickColor"), which is exactly the live bug
+    // this guard closes.
+    if (/^[A-Za-z]+(?: [A-Za-z]+)+$/.test(value)) {
+      return `BrickColor.new(${JSON.stringify(value)})`;
+    }
+  }
+  return JSON.stringify(value);
+}
+
 /** Outcome of a property re-apply: what landed, and what this build refuses (with its own reason). */
 export interface PropertyWriteResult {
   /** Keys the Luau actually assigned. Only these may be verified by the caller. */
@@ -339,7 +413,7 @@ export async function setInstanceProperties(
 ): Promise<PropertyWriteResult> {
   const legacy = await pickTool(mcp, ['studio.set_properties', 'studio.update_properties'] as const, signal);
   if (legacy !== undefined) {
-    const result = await mcp.callTool(legacy, { path, properties }, signal);
+    const result = await mcp.callTool(legacy.name, { path, properties }, signal);
     // A dedicated tool is all-or-nothing: either every key went in or the call failed.
     if (isErrorText(result)) throw new Error(String(result));
     return { applied: Object.keys(properties), skipped: [] };
@@ -349,8 +423,10 @@ export async function setInstanceProperties(
 
   // `inst` must be bound before it is indexed — an earlier version emitted `inst[key] = …` against an
   // undeclared local, so the Luau failed at runtime and every property restore reported failure.
+  // `reconstructValue` recovers Vector3/Color3/BrickColor literals from the lossy serialisation where
+  // possible; any value it cannot recover stays a plain string, which the pcall rejects → skipped.
   const attempts = Object.entries(properties)
-    .map(([key, value]) => `attempt(${JSON.stringify(key)}, ${JSON.stringify(value)})`)
+    .map(([key, value]) => `attempt(${JSON.stringify(key)}, ${reconstructValue(value)})`)
     .join('\n');
   const code = [
     resolveLuau(path),
@@ -366,7 +442,7 @@ export async function setInstanceProperties(
     'return game:GetService("HttpService"):JSONEncode({ applied = applied, failed = failed })',
   ].join('\n');
 
-  const result = await mcp.callTool(tool, { code, datamodel_type: DATAMODEL }, signal);
+  const result = await mcp.callTool(tool.name, { code, datamodel_type: DATAMODEL }, signal);
   const text = typeof result === 'string' ? result : '';
   if (isErrorText(result)) throw new Error(text || 'Studio báo lỗi khi đặt thuộc tính.');
 

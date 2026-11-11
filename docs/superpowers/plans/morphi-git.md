@@ -222,28 +222,58 @@ the snapshot recorded; a changed key is drift for a batch (turn) restore. Script
 exactly. This is no longer "only script source" — the note in the preview now says what it actually
 checked.
 
+## Live HTTP end-to-end (Phase 5 — closed the two last gaps)
+
+`server/scripts/e2e-live-undo.mjs` drives the whole path over HTTP against a real place: seed
+`ServerScriptService.MorphiE2E` = `local V = 1` → `POST /api/chat/stream` with `/script
+studio-real-edit` (fake LLM emits one `studio.multi_edit`) → the live script becomes `local V = 2`
+→ checkpoint is `restorable: true` → `POST /api/sessions/:id/undo-turn` → the live script reads back
+as `local V = 1` **through Studio's own MCP server**, not through our API. Run it with the server in
+`MORPHI_FAKE_LLM=1 MORPHI_FAKE_SCRIPT=studio-real-edit MORPHI_LIVE_STUDIO=1` mode and
+`POST /api/mcp/reconnect` first (the gateway connects lazily); the script seeds and cleans its own
+fixture. Last run: **11/11 PASS, E2E OK** on `Place1`.
+
+Three real bugs only this probe could find (unit tests called the loop/gateway directly and stayed
+green):
+
+- **Real-vs-legacy shape was decided by name prefix.** `ServiceMcpGateway` publishes the real tools
+  PREFIXED (`studio.script_read`, `studio.multi_edit`) while forwarding the real schemas, so the
+  prefix test made every snapshot read miss and no checkpoint was ever restorable. `studioWire.ts`
+  now decides from the advertised schema (`target_file` / `file_path` / `code`) and falls back to
+  "unprefixed ⇒ real", pinned by `studioWire.test.ts` + `snapshot.test.ts`.
+- **`studio-real-edit` fake args were not schema-valid:** `multi_edit` requires `datamodel_type`, so
+  the turn died with `INVALID_ARGS: data must have required property 'datamodel_type'` and never
+  mutated anything. The fixture now sends `file_path` + `datamodel_type: 'Edit'` + `edits`.
+- **`POST /chat/stream` dropped `permissionMode`.** The composer sends the three-way approval switch
+  on every message; the route accepted the field and never forwarded it into `AgentTurnInput`, so
+  `full` behaved like `balanced` and every `ask`-risk tool (including `multi_edit`) waited out its
+  approval timeout and settled as `APPROVAL_DENIED`. Fixed in `routes/chat.ts`, pinned by
+  "permissionMode full runs an ask-risk tool without any approval request" in `chat.test.ts`.
+
+Value reconstruction from the lossy `inspect_instance` string is now handled where it is
+unambiguous: `reconstructValue` rebuilds `Vector3.new(x, y, z)` from a numeric triple and
+`BrickColor.new("Medium stone grey")` from a multi-word name, and leaves single-word strings
+(`CollisionGroup: "Default"`) as plain strings so a real string property is never turned into a
+BrickColor. `setInstanceProperties` still isolates every key in its own `pcall` and reports refusals.
+
 ## Remaining gaps (documented, intentionally not done)
 
-- **True HTTP end-to-end undo through the running app** is not run: it needs an authenticated
-  launch. The route is covered by `routes.test.ts` with a fake MCP, and the engine is covered live
-  by `liveProbe.test.ts`. Wiring a live session through the Electron app would validate the full
-  path but is out of scope for this pass.
-- **BrickColor / Size / CFrame / UniqueId surface as `skipped`** with Studio's message rather than
-  being silently dropped or falsely restored. Making them restorable would need typed reconstruction
-  (Vector3/Color3/BrickColor), which the wire does not give us — `inspect_instance` serialises them
-  as strings that Luau rejects. Per-key isolation already reports the refusal instead of failing the
-  whole restore.
+- **Enum / `CFrame` rotation / `UniqueId` still surface as `skipped`** with Studio's own message.
+  `Vector3`/`Color3` triples and `BrickColor` names are now reconstructed, but `"Enum.Material.Plastic"`
+  would need a `Enum.Material.Plastic` literal and `CFrame.Rotation` is a pseudo-path that is not a
+  member at all — both stay refused-and-reported rather than guessed.
 - **Deleted-instance recreation** from children/properties is not attempted: an inserted instance's
   inverse is a delete (reliable), not a recreate, so undoing an insert removes it rather than
   rebuilding its subtree. Capturing children for recreation would need a separate snapshot shape.
 
 ## Verification gate (last green run)
 
-- `server tsc --noEmit` clean; `server vitest` **727 passed / 4 skipped** (4 skip = live probe).
-- `MORPHI_LIVE_STUDIO=1 npx vitest run src/harness/checkpoints/liveProbe.test.ts` → **4/4 passed**
-  on real `Place1` (tools present / no guessed names; script restore snapshot→mutate→undo→read-back;
-  property restore incl. string `CollisionGroup` + `skipped` non-empty).
-- `client tsc -b` clean; `client vitest` **631 passed**.
+- `server tsc --noEmit` clean; `server vitest` **733 passed / 5 skipped** (5 skip = live probe).
+- `MORPHI_LIVE_STUDIO=1 npx vitest run src/harness/checkpoints/liveProbe.test.ts` → **5/5 passed**
+  on real `Place1` (script restore snapshot→mutate→undo→read-back; property restore incl. string
+  `CollisionGroup` + `skipped`; Vector3/BrickColor reconstruction restored and re-inspected).
+- `node scripts/e2e-live-undo.mjs` against the live server → **11/11 PASS** (see above).
+- `client tsc --noEmit` clean; `client vitest` **631 passed**.
 - `Place1` verified CLEAN after every live run (no leftover probe scripts/instances).
 
 ## Post-Phase-2 notes (live verified)

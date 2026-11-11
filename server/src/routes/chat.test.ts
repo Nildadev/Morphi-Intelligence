@@ -384,6 +384,33 @@ describe('chat stream: approvals', () => {
     expect(statusFrames(frames)).toEqual(['thinking', 'tool', 'waiting_approval', 'tool', 'thinking', 'idle']);
   });
 
+  /**
+   * The composer's three-way switch (Task 31D) rides on EVERY message as `permissionMode`, so the
+   * stream route must forward it into the turn. It did not: the field was accepted by the schema and
+   * then dropped, so `full` behaved exactly like `balanced` and every `ask`-risk tool sat until its
+   * approval timeout and came back APPROVAL_DENIED. Found by the live HTTP undo probe (a real
+   * `studio.multi_edit` call), never by a test that called the loop directly.
+   */
+  it('permissionMode full runs an ask-risk tool without any approval request', async () => {
+    const executed: unknown[] = [];
+    const { harness } = await buildTestHarness([callsStep('call_1', 'spawn_part'), [text('Xong.'), stop()]]);
+    const app = buildApp(harness);
+    harness.tools.register(toolDefinition('spawn_part', 'ask', 'medium', async (args) => {
+      executed.push(args);
+      return { ok: true };
+    }));
+    const sessionId = makeSession(harness);
+
+    const frames = await runStream(app, sessionId, 'Tạo một part', { permissionMode: 'full' });
+
+    expect(executed).toEqual([{}]);
+    expect(rowsOfType(harness, sessionId, 'approval/request')).toHaveLength(0);
+    expect(framesOfType(frames, 'approval/request')).toHaveLength(0);
+    const toolResult = rowsOfType(harness, sessionId, 'tool/result')[0].payload as EventPayloadMap['tool/result'];
+    expect(toolResult).toMatchObject({ callId: 'call_1', status: 'done' });
+    expect(framesOfType(frames, 'turn/end')[0].payload.reason).toBe('completed');
+  });
+
   it('404s an unknown approval id and rejects a malformed decision', async () => {
     const { harness } = await buildTestHarness([[stop()]]);
     const app = buildApp(harness);

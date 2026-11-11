@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { McpGateway } from '../tools/types';
+import type { McpGateway, ToolSchema } from '../tools/types';
 import {
   deleteInstance,
   inspectInstance,
@@ -19,13 +19,82 @@ import {
  *  - there is no delete/set-properties tool, so those go through `execute_luau`.
  * The engine only ever passed in fake mode before this adapter existed, so every assertion here is
  * a case that would have silently failed on a real place.
+ *
+ * REAL vs LEGACY is decided by `speaksRealShape` (schema-first, name-fallback), NOT by the name
+ * prefix. The app's own `ServiceMcpGateway` publishes the real tools PREFIXED (`studio.script_read`),
+ * while the raw server uses unprefixed names — so a prefix heuristic sends the wrong args and, through
+ * the app gateway, every snapshot read fails while all fake-gateway tests stay green. The HTTP
+ * end-to-end caught this; the gateway factories below reproduce both shapes.
  */
 
 interface Recording extends McpGateway {
   calls: Array<{ tool: string; args: Record<string, unknown> }>;
 }
 
-function gateway(
+/** Raw server (live probe): unprefixed names, real schemas. */
+function rawGateway(
+  tools: Record<string, (args: Record<string, unknown>) => unknown>,
+): Recording {
+  const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+  return {
+    connected: true,
+    studioLinked: true,
+    server: null,
+    studio: null,
+    toolCount: Object.keys(tools).length,
+    lastError: null,
+    calls,
+    listTools: async () =>
+      Object.keys(tools).map((name) => ({
+        name,
+        description: name,
+        parameters: { type: 'object', properties: { target_file: {}, file_path: {}, code: {}, path: {} } },
+      })),
+    callTool: async (name: string, args: unknown) => {
+      const argsRecord = (args ?? {}) as Record<string, unknown>;
+      calls.push({ tool: name, args: argsRecord });
+      const handler = tools[name];
+      if (handler === undefined) throw new Error(`no such tool: ${name}`);
+      return handler(argsRecord);
+    },
+    reconnect: async () => undefined,
+    close: async () => undefined,
+  };
+}
+
+/** App's ServiceMcpGateway: PREFIXED names, but forwards the REAL schema (target_file/file_path/code). */
+function appGateway(
+  tools: Record<string, (args: Record<string, unknown>) => unknown>,
+): Recording {
+  const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+  return {
+    connected: true,
+    studioLinked: true,
+    server: null,
+    studio: null,
+    toolCount: Object.keys(tools).length,
+    lastError: null,
+    calls,
+    listTools: async () =>
+      Object.keys(tools).map((name) => ({
+        name: `studio.${name}`,
+        description: name,
+        parameters: { type: 'object', properties: { target_file: {}, file_path: {}, code: {}, path: {} } },
+      })),
+    callTool: async (name: string, args: unknown) => {
+      const argsRecord = (args ?? {}) as Record<string, unknown>;
+      calls.push({ tool: name, args: argsRecord });
+      const handler = tools[name.replace(/^studio\./, '')];
+      if (handler === undefined) throw new Error(`no such tool: ${name}`);
+      return handler(argsRecord);
+    },
+    reconnect: async () => undefined,
+    close: async () => undefined,
+  };
+}
+
+/** Legacy fake gateway (E2E fixtures): prefixed names, NO discriminating schema property. */
+function legacyGateway(
   tools: Record<string, (args: Record<string, unknown>) => unknown>,
 ): Recording {
   const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
@@ -153,7 +222,7 @@ describe('propertiesFrom - the JSON-string inspect answer', () => {
 
 describe('readScriptSource', () => {
   it('calls the real `script_read` with `target_file` and asks for the whole file', async () => {
-    const mcp = gateway({ script_read: () => '     1→local A = 1' });
+    const mcp = rawGateway({ script_read: () => '     1→local A = 1' });
     const source = await readScriptSource(mcp, 'ReplicatedStorage.A');
     expect(source).toBe('local A = 1');
     expect(mcp.calls[0]).toEqual({
@@ -162,21 +231,21 @@ describe('readScriptSource', () => {
     });
   });
 
-  it('uses `path` for the legacy studio.* alias so fake gateways keep working', async () => {
-    const mcp = gateway({ 'studio.script_read': () => 'old' });
+  it('uses `path` for the raw server tool (unprefixed name, real schema is still real shape)', async () => {
+    const mcp = rawGateway({ script_read: () => 'old' });
     await readScriptSource(mcp, 'A');
-    expect(mcp.calls[0]?.args).toEqual({ path: 'A' });
+    expect(mcp.calls[0]?.args).toEqual({ target_file: 'A', should_read_entire_file: true });
   });
 
   it('returns null when the tool is missing, instead of pretending it read something', async () => {
-    const mcp = gateway({});
+    const mcp = rawGateway({});
     expect(await readScriptSource(mcp, 'A')).toBeNull();
   });
 });
 
 describe('writeScriptSource', () => {
   it('creates a script with an empty old_string when nothing exists yet', async () => {
-    const mcp = gateway({ multi_edit: () => 'ok' });
+    const mcp = rawGateway({ multi_edit: () => 'ok' });
     await writeScriptSource(mcp, 'ReplicatedStorage.A', 'local A = 2');
     expect(mcp.calls[0]).toEqual({
       tool: 'multi_edit',
@@ -192,7 +261,7 @@ describe('writeScriptSource', () => {
   it('replaces exactly by using the CURRENT source as old_string', async () => {
     // MEASURED LIVE: `old_string: ''` appends instead of replacing, so a rewrite built on an empty
     // old_string produces `new..old` and corrupts the script. This is the regression guard.
-    const mcp = gateway({
+    const mcp = rawGateway({
       script_read: () => '     1→local A = 1',
       multi_edit: () => 'Modified A (Script) with 1 edits applied',
     });
@@ -202,14 +271,14 @@ describe('writeScriptSource', () => {
   });
 
   it('throws when no write tool exists, which the engine reports as a failure', async () => {
-    const mcp = gateway({});
+    const mcp = rawGateway({});
     await expect(writeScriptSource(mcp, 'A', 'x')).rejects.toThrow('ghi script');
   });
 });
 
 describe('deleteInstance', () => {
   it('destroys through execute_luau and confirms the instance is really gone', async () => {
-    const mcp = gateway({
+    const mcp = rawGateway({
       execute_luau: (args) => {
         // The adapter sends a destroy pass, then a read-only presence probe.
         return String(args.code).includes(':Destroy()') ? 'ok' : 'missing';
@@ -231,19 +300,19 @@ describe('deleteInstance', () => {
 
   it('reports failure when the path does not exist instead of claiming a delete', async () => {
     // MEASURED LIVE: returning "deleted" unconditionally left every probe script in the place.
-    const mcp = gateway({ execute_luau: () => 'error: not found' });
+    const mcp = rawGateway({ execute_luau: () => 'error: not found' });
     expect(await deleteInstance(mcp, 'Workspace.Tree')).toBe(false);
   });
 
   it('reports failure when the destroy ran but the instance is still there', async () => {
-    const mcp = gateway({
+    const mcp = rawGateway({
       execute_luau: (args) => (String(args.code).includes(':Destroy()') ? 'ok' : 'exists'),
     });
     expect(await deleteInstance(mcp, 'Workspace.Tree')).toBe(false);
   });
 
   it('reports failure when the Luau answer is an error sentence', async () => {
-    const mcp = gateway({ execute_luau: () => 'error: attempt to index nil' });
+    const mcp = rawGateway({ execute_luau: () => 'error: attempt to index nil' });
     expect(await deleteInstance(mcp, 'Workspace.Tree')).toBe(false);
   });
 });
@@ -255,7 +324,7 @@ describe('setInstanceProperties', () => {
 
   it('binds the instance before indexing it, so the Luau can actually run', async () => {
     // An earlier version emitted `inst[key] = ...` with no `inst` local — invalid Luau every time.
-    const mcp = gateway({ execute_luau: () => report(['Transparency']) });
+    const mcp = rawGateway({ execute_luau: () => report(['Transparency']) });
     await setInstanceProperties(mcp, 'Workspace.Part', { Transparency: 0.5 });
     const code = String(mcp.calls[0]?.args.code);
     expect(code).toContain('local inst = root');
@@ -265,7 +334,7 @@ describe('setInstanceProperties', () => {
   it('isolates every key in its own pcall so one refusal cannot fail the rest', async () => {
     // MEASURED LIVE: an unconditional re-apply threw on the first bad key ("Vector3 expected, got
     // string") and failed the whole restore.
-    const mcp = gateway({
+    const mcp = rawGateway({
       execute_luau: () => report(['Transparency', 'Anchored'], [{ key: 'Size', reason: 'Vector3 expected, got string' }]),
     });
     const written = await setInstanceProperties(mcp, 'Workspace.Part', { Transparency: 0, Anchored: true, Size: '4, 1.2, 2' });
@@ -277,26 +346,26 @@ describe('setInstanceProperties', () => {
   });
 
   it('escapes a property value that needs quoting', async () => {
-    const mcp = gateway({ execute_luau: () => report(['CollisionGroup']) });
+    const mcp = rawGateway({ execute_luau: () => report(['CollisionGroup']) });
     await setInstanceProperties(mcp, 'Workspace.Part', { CollisionGroup: 'has "quotes"' });
     expect(String(mcp.calls[0]?.args.code)).toContain('attempt("CollisionGroup", "has \\"quotes\\"")');
   });
 
   it('prefers a dedicated property tool when a fake gateway exposes one', async () => {
-    const mcp = gateway({ 'studio.set_properties': () => ({ ok: true }) });
+    const mcp = legacyGateway({ 'studio.set_properties': () => ({ ok: true }) });
     expect(await setInstanceProperties(mcp, 'A', { X: 1 })).toEqual({ applied: ['X'], skipped: [] });
     expect(mcp.calls[0]).toEqual({ tool: 'studio.set_properties', args: { path: 'A', properties: { X: 1 } } });
   });
 
   it('throws instead of assuming success when the report cannot be parsed', async () => {
-    const mcp = gateway({ execute_luau: () => 'ok' });
+    const mcp = rawGateway({ execute_luau: () => 'ok' });
     await expect(setInstanceProperties(mcp, 'A', { X: 1 })).rejects.toThrow('không trả về kết quả đọc được');
   });
 });
 
 describe('inspectInstance', () => {
   it('calls `inspect_instance` with the dot path and returns the bag', async () => {
-    const mcp = gateway({
+    const mcp = rawGateway({
       inspect_instance: () => JSON.stringify({ properties: { Anchored: true } }),
     });
     expect(await inspectInstance(mcp, 'Workspace.Part')).toEqual({ Anchored: true });
@@ -304,7 +373,46 @@ describe('inspectInstance', () => {
   });
 
   it('returns null for an unreadable instance so drift is reported, not guessed', async () => {
-    const mcp = gateway({ inspect_instance: () => 'not json' });
+    const mcp = rawGateway({ inspect_instance: () => 'not json' });
     expect(await inspectInstance(mcp, 'Workspace.Part')).toBeNull();
   });
 });
+
+describe('gateway-shape detection (the HTTP end-to-end bug)', () => {
+  // The app's ServiceMcpGateway publishes the real tools PREFIXED (`studio.script_read`) but forwards
+  // the real schema. A name-prefix heuristic would treat them as legacy and send `{path}`/`{source}`,
+  // which the real server rejects — every snapshot read fails while fake-gateway tests stay green.
+  // `speaksRealShape` must key off the schema, so the app gateway speaks the real args.
+
+  it('reads with target_file through the app gateway (prefixed name, real schema)', async () => {
+    const mcp = appGateway({ script_read: () => '     1→local A = 1' });
+    const source = await readScriptSource(mcp, 'ReplicatedStorage.A');
+    expect(source).toBe('local A = 1');
+    expect(mcp.calls[0]).toEqual({
+      tool: 'studio.script_read',
+      args: { target_file: 'ReplicatedStorage.A', should_read_entire_file: true },
+    });
+  });
+
+  it('writes with file_path/edits through the app gateway (prefixed name, real schema)', async () => {
+    const mcp = appGateway({ multi_edit: () => 'ok' });
+    await writeScriptSource(mcp, 'ReplicatedStorage.A', 'local A = 2');
+    expect(mcp.calls[0]).toEqual({
+      tool: 'studio.multi_edit',
+      args: {
+        file_path: 'ReplicatedStorage.A',
+        datamodel_type: 'Edit',
+        className: 'Script',
+        edits: [{ old_string: '', new_string: 'local A = 2' }],
+      },
+    });
+  });
+
+  it('still speaks {path} for a genuinely legacy fake gateway (prefixed, no schema)', async () => {
+    const mcp = legacyGateway({ 'studio.script_read': () => 'old' });
+    await readScriptSource(mcp, 'A');
+    expect(mcp.calls[0]?.args).toEqual({ path: 'A' });
+  });
+});
+
+

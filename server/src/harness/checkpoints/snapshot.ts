@@ -125,10 +125,12 @@ export async function snapshotPreState(
     for (const path of paths) {
       const source = await readScriptSource(mcp, path, signal);
       if (source === null) {
-        // A create has no old source by definition; its inverse is a delete, not a write.
-        const created = toolName === 'studio.create_script' || toolName === 'studio.write_script' || toolName === 'create_script' || toolName === 'write_script';
-        const about = sourceOf(args);
-        if (created && about !== null) {
+        // The read found nothing. That is a CREATE only when the ARGS say so: a dedicated create
+        // tool, or a `multi_edit` edit that starts from an empty `old_string` (measured semantics:
+        // empty old_string is how the real tool writes a new script). Otherwise a failed read on an
+        // EXISTING script must stay a note — claiming "inserted" here would make the restore DELETE
+        // the user's script instead of restoring its source.
+        if (declaresCreate(toolName, args)) {
           entries.push({ kind: 'inserted', path });
           inverse.push({ tool: 'delete_instance', path });
           continue;
@@ -173,6 +175,24 @@ export async function snapshotPreState(
   }
 
   return { entries, inverse, notes };
+}
+
+/**
+ * Does this call CREATE a script (so its inverse is a delete) rather than EDIT one (inverse = rewrite)?
+ * Decided from the ARGS, not from whether the read found anything: a dedicated create tool always
+ * creates, and the real `multi_edit` creates when its first edit's `old_string` is empty (measured:
+ * empty old_string is how the server writes a new script — a non-empty old_string that does not match
+ * is a genuine edit that failed to read back, which must NOT be turned into a delete).
+ */
+function declaresCreate(toolName: string, args: unknown): boolean {
+  const createsByName = toolName === 'studio.create_script' || toolName === 'create_script'
+    || toolName === 'studio.write_script' || toolName === 'write_script';
+  if (createsByName) return true;
+  if (toolName !== 'studio.multi_edit' && toolName !== 'multi_edit') return false;
+  const record = (args ?? {}) as Record<string, unknown>;
+  const edits = Array.isArray(record.edits) ? (record.edits as Array<{ old_string?: string }>) : [];
+  const first = edits[0];
+  return first !== undefined && (first.old_string ?? '') === '';
 }
 
 /** A snapshot is restorable only when every touched target produced an inverse step. */

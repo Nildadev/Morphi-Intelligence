@@ -65,11 +65,26 @@ describe('snapshotPreState', () => {
         expect(isRestorable(snapshot)).toBe(true);
     });
 
-    it('is NOT restorable when no read tool is exposed', async () => {
+    it('treats a dedicated create tool with no readable old source as an insert, even with no read tool', async () => {
+        // `studio.write_script` is a create tool by name: its inverse is a delete regardless of whether
+        // the old source could be read, because there is no existing script to restore a source onto.
         const snapshot = await snapshotPreState(
             gateway({ listTools: tools() }),
             'studio.write_script',
-            { path: 'A' },
+            { path: 'A', source: 'print("hi")' },
+        );
+        expect(snapshot.inverse).toEqual([{ tool: 'delete_instance', path: 'A' }]);
+        expect(snapshot.notes).toEqual([]);
+        expect(isRestorable(snapshot)).toBe(true);
+    });
+
+    it('is NOT restorable when an edit (not a create) cannot read the old source', async () => {
+        // `multi_edit` with a non-empty old_string is an EDIT of an existing script; if the read fails,
+        // the inverse cannot be a delete (that would delete the user's script), so it stays a note.
+        const snapshot = await snapshotPreState(
+            gateway({ listTools: tools() }),
+            'studio.multi_edit',
+            { edits: [{ path: 'A', old_string: 'x', new_string: 'y' }] },
         );
         expect(snapshot.inverse).toEqual([]);
         expect(snapshot.notes[0]).toContain('Không đọc được');
@@ -124,8 +139,9 @@ describe('snapshotPreState', () => {
         expect(snapshot.notes[0]).toContain('execute_luau');
     });
 
-    it('stays non-restorable when SOME targets could not be read', async () => {
-        // One unreadable file means a partial restore — the plan forbids claiming that as undoable.
+    it('stays non-restorable when an edit target could not be read (partial read = no undoable claim)', async () => {
+        // `multi_edit` with a non-empty old_string is an EDIT; if one target's read fails, that target is
+        // a note, so the whole snapshot is non-restorable (a partial restore is forbidden by the plan).
         let call = 0;
         const snapshot = await snapshotPreState(
             gateway({
@@ -136,10 +152,23 @@ describe('snapshotPreState', () => {
                 },
             }),
             'studio.multi_edit',
-            { edits: [{ path: 'A' }, { path: 'B' }] },
+            { edits: [{ path: 'A', old_string: 'x', new_string: 'y' }, { path: 'B', old_string: 'x', new_string: 'y' }] },
         );
         expect(snapshot.inverse.map((step) => step.path)).toEqual(['A']);
         expect(snapshot.notes).toHaveLength(1);
         expect(isRestorable(snapshot)).toBe(false);
+    });
+
+    it('treats multi_edit with empty old_string as a create, so every target is an insert', async () => {
+        // MEASURED: the real tool writes a new script when old_string is empty. Both targets become
+        // inserts with delete inverses — fully restorable, never a partial note.
+        const snapshot = await snapshotPreState(
+            gateway({ listTools: tools() }),
+            'studio.multi_edit',
+            { edits: [{ path: 'A', old_string: '', new_string: 'a' }, { path: 'B', old_string: '', new_string: 'b' }] },
+        );
+        expect(snapshot.inverse.map((step) => step.tool)).toEqual(['delete_instance', 'delete_instance']);
+        expect(snapshot.notes).toEqual([]);
+        expect(isRestorable(snapshot)).toBe(true);
     });
 });

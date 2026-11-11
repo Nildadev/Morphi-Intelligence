@@ -134,71 +134,79 @@ if (fakeMode) {
     presentation: { label: 'E2E echo', risk: 'low' },
   });
 
-  // E2E-only `studio.edit_script`: the real Studio tool lives on the MCP surface and needs a
-  // connected place, so without this the turn-work summary ("N tệp thay đổi +A −D") could only
-  // be tested at the unit level. The NAME is the contract: the client's `turnChanges` module
-  // keys off `EDIT_TOOL_NAMES`, so a differently named fake would render no summary at all.
-  // `approval: 'auto'` keeps the demo one turn instead of two (no modal to dismiss).
-  harness.tools.register({
-    name: 'studio.edit_script',
-    description: 'E2E-only tool: pretend to rewrite a script and return its diff shape.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'Script path' },
-        old: { type: 'string', description: 'Previous source' },
-        source: { type: 'string', description: 'New source' },
+  // E2E-only `studio.*` fixtures exist so the transcript can be exercised WITHOUT a Roblox Studio
+  // connection. They deliberately SHADOW the real MCP tools of the same names — `registry.syncMcp`
+  // never overwrites a locally registered tool — which is exactly wrong for the real-end-to-end
+  // HTTP probe (MORPHI_LIVE_STUDIO=1): there the real `studio.multi_edit` must answer or the place
+  // is never touched. That env is only set for the live probe, so ordinary fake-mode E2E keeps its
+  // fixtures.
+  if (process.env.MORPHI_LIVE_STUDIO !== '1') {
+    // E2E-only `studio.edit_script`: the real Studio tool lives on the MCP surface and needs a
+    // connected place, so without this the turn-work summary ("N tệp thay đổi +A −D") could only
+    // be tested at the unit level. The NAME is the contract: the client's `turnChanges` module
+    // keys off `EDIT_TOOL_NAMES`, so a differently named fake would render no summary at all.
+    // `approval: 'auto'` keeps the demo one turn instead of two (no modal to dismiss).
+    harness.tools.register({
+      name: 'studio.edit_script',
+      description: 'E2E-only tool: pretend to rewrite a script and return its diff shape.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Script path' },
+          old: { type: 'string', description: 'Previous source' },
+          source: { type: 'string', description: 'New source' },
+        },
+        required: ['path', 'source'],
+        additionalProperties: false,
       },
-      required: ['path', 'source'],
-      additionalProperties: false,
-    },
-    async execute(args: unknown): Promise<unknown> {
-      const record = (args ?? {}) as { path?: string; source?: string };
-      return { ok: true, path: record.path ?? '', bytes: (record.source ?? '').length };
-    },
-    isConcurrencySafe: true,
-    approval: 'auto',
-    // `medium`, not `low`: the pipeline only records a workspace checkpoint for a mutating
-    // `studio.*` call with risk != low, and this fixture exists to exercise that path (the
-    // summary's Undo button needs a real checkpoint to restore).
-    presentation: { label: 'E2E edit script', risk: 'medium' },
-  });
+      async execute(args: unknown): Promise<unknown> {
+        const record = (args ?? {}) as { path?: string; source?: string };
+        return { ok: true, path: record.path ?? '', bytes: (record.source ?? '').length };
+      },
+      isConcurrencySafe: true,
+      approval: 'auto',
+      // `medium`, not `low`: the pipeline only records a workspace checkpoint for a mutating
+      // `studio.*` call with risk != low, and this fixture exists to exercise that path (the
+      // summary's Undo button needs a real checkpoint to restore).
+      presentation: { label: 'E2E edit script', risk: 'medium' },
+    });
 
-  // The rest of the `/script alltool` tour. Each is the smallest tool that produces a distinct
-  // transcript row shape (read, search, shell, write, multi-edit, failure), so the whole log can be
-  // inspected in one turn. Names are the real ones where the client maps an icon by name.
-  const tourTool = (
-    name: string,
-    label: string,
-    properties: Record<string, JsonSchema>,
-    required: string[],
-    execute: (args: Record<string, unknown>) => unknown,
-    risk: 'low' | 'medium' = 'low',
-  ) => harness.tools.register({
-    name,
-    description: `E2E-only tool for the alltool design tour: ${label}.`,
-    parameters: { type: 'object', properties, required, additionalProperties: true },
-    async execute(args: unknown): Promise<unknown> {
-      return execute((args ?? {}) as Record<string, unknown>);
-    },
-    isConcurrencySafe: true,
-    approval: 'auto',
-    presentation: { label, risk },
-  });
+    // The rest of the `/script alltool` tour. Each is the smallest tool that produces a distinct
+    // transcript row shape (read, search, shell, write, multi-edit, failure), so the whole log can
+    // be inspected in one turn. Names are the real ones where the client maps an icon by name.
+    const tourTool = (
+      name: string,
+      label: string,
+      properties: Record<string, JsonSchema>,
+      required: string[],
+      execute: (args: Record<string, unknown>) => unknown,
+      risk: 'low' | 'medium' = 'low',
+    ) => harness.tools.register({
+      name,
+      description: `E2E-only tool for the alltool design tour: ${label}.`,
+      parameters: { type: 'object', properties, required, additionalProperties: true },
+      async execute(args: unknown): Promise<unknown> {
+        return execute((args ?? {}) as Record<string, unknown>);
+      },
+      isConcurrencySafe: true,
+      approval: 'auto',
+      presentation: { label, risk },
+    });
 
-  tourTool('studio.script_read', 'Đọc script', { path: { type: 'string' } }, ['path'],
-    (args) => ({ path: args.path ?? '', source: '-- nội dung giả lập\nreturn {}' }));
-  tourTool('studio.search_game_tree', 'Tìm trong cây', { query: { type: 'string' } }, ['query'],
-    (args) => ({ query: args.query ?? '', matches: ['Workspace.Dummy.Humanoid', 'Workspace.NPC.Humanoid'] }));
-  tourTool('run_command', 'Chạy lệnh', { cmd: { type: 'string' } }, ['cmd'],
-    (args) => ({ exitCode: 0, stdout: `$ ${String(args.cmd ?? '')}\n0 problems found` }));
-  tourTool('studio.write_script', 'Ghi script',
-    { path: { type: 'string' }, source: { type: 'string' } }, ['path', 'source'],
-    (args) => ({ ok: true, path: args.path ?? '', bytes: String(args.source ?? '').length }), 'medium');
-  tourTool('studio.multi_edit', 'Sửa nhiều script', { edits: { type: 'array' } }, ['edits'],
-    (args) => ({ ok: true, edited: Array.isArray(args.edits) ? args.edits.length : 0 }), 'medium');
-  tourTool('studio.execute_luau', 'Chạy mã Luau', { code: { type: 'string' } }, ['code'],
-    () => { throw new Error('boom: lỗi giả lập cho tour thiết kế'); }, 'medium');
+    tourTool('studio.script_read', 'Đọc script', { path: { type: 'string' } }, ['path'],
+      (args) => ({ path: args.path ?? '', source: '-- nội dung giả lập\nreturn {}' }));
+    tourTool('studio.search_game_tree', 'Tìm trong cây', { query: { type: 'string' } }, ['query'],
+      (args) => ({ query: args.query ?? '', matches: ['Workspace.Dummy.Humanoid', 'Workspace.NPC.Humanoid'] }));
+    tourTool('run_command', 'Chạy lệnh', { cmd: { type: 'string' } }, ['cmd'],
+      (args) => ({ exitCode: 0, stdout: `$ ${String(args.cmd ?? '')}\n0 problems found` }));
+    tourTool('studio.write_script', 'Ghi script',
+      { path: { type: 'string' }, source: { type: 'string' } }, ['path', 'source'],
+      (args) => ({ ok: true, path: args.path ?? '', bytes: String(args.source ?? '').length }), 'medium');
+    tourTool('studio.multi_edit', 'Sửa nhiều script', { edits: { type: 'array' } }, ['edits'],
+      (args) => ({ ok: true, edited: Array.isArray(args.edits) ? args.edits.length : 0 }), 'medium');
+    tourTool('studio.execute_luau', 'Chạy mã Luau', { code: { type: 'string' } }, ['code'],
+      () => { throw new Error('boom: lỗi giả lập cho tour thiết kế'); }, 'medium');
+  }
 }
 
 for (const setting of providerSettings.list()) {

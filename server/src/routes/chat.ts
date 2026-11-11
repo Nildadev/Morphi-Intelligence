@@ -187,6 +187,11 @@ export function createChatRouter(harness: Harness): Router {
       trigger: 'user',
       ...(input.effort === undefined ? {} : { effort: input.effort }),
       ...(input.language === undefined ? {} : { language: input.language }),
+      // The approval mode is per-turn state the client sends on EVERY message (Composer's three-way
+      // switch), so dropping it here silently disabled the whole feature over HTTP: every `ask`-risk
+      // tool waited out its approval timeout and came back APPROVAL_DENIED even with `full` selected.
+      // Found by the live HTTP undo probe, never by a unit test that called the loop directly.
+      ...(input.permissionMode === undefined ? {} : { permissionMode: input.permissionMode }),
       ...(input.attachments === undefined ? {} : { attachments: input.attachments }),
     });
   }));
