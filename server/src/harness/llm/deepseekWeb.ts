@@ -93,6 +93,8 @@ export interface DeepSeekWebOptions {
   wasmUrl?: string;
   /** Test seam: replace the WASM solver entirely. */
   solver?: (challenge: string, salt: string, difficulty: number, expireAt: number) => number | undefined;
+  /** Test seam: override the backoff ladders (ms) so retry tests do not sleep for real. */
+  retryDelays?: { parallelLimit?: number[]; rateLimit?: number[]; network?: number[] };
 }
 
 /** Auth-expired (40002/40003): the stored session was refused and must be re-captured. */
@@ -137,7 +139,7 @@ export function parseDeepSeekCredential(raw: string | undefined): DeepSeekAuth |
  * wastes the window or overruns it ("Content is too long"). The system line is outside the cap —
  * dropping it changes the persona, not just the history.
  */
-export function buildDeepSeekPrompt(messages: readonly LlmMessage[], tools: readonly ToolSchema[] = []): string {
+export function buildDeepSeekPrompt(messages: readonly LlmMessage[], tools: readonly ToolSchema[] = [], opts: { maxChars?: number } = {}): string {
   const render = (message: LlmMessage): string => {
     if (message.role === 'tool') {
       return `[Tool result id=${message.toolCallId ?? 'unknown'}]\n${message.content}`;
@@ -165,7 +167,7 @@ export function buildDeepSeekPrompt(messages: readonly LlmMessage[], tools: read
   // matters when there is nothing stronger to say first.
   systems.push(tools.length > 0 ? buildToolsSystemPrompt(tools) : LANGUAGE_GUARD);
 
-  const maxChars = charBudgetForTokens(messages, MAX_PROMPT_TOKENS);
+  const maxChars = opts.maxChars ?? charBudgetForTokens(messages, MAX_PROMPT_TOKENS);
   const kept = keepNewest(parts, maxChars, { reserved: '\n\nAssistant:'.length, join: 2 });
   kept.unshift(`System: ${systems.join('\n\n')}`);
   return [...kept, 'Assistant:'].join('\n\n');
@@ -619,10 +621,177 @@ function bizErrorOf(parsed: unknown): string | null {
   return null;
 }
 
+/** Backoff before re-entering the single generation slot. */
+const PARALLEL_LIMIT_RETRY_DELAYS_MS = [1500, 4000];
+
+/**
+ * Backoff for the account-wide throttle ("Messages too frequent"). It counts turns over a window
+ * rather than concurrency, so it needs a real pause — the sub-second backoff a busy generation slot
+ * gets would just burn the retries.
+ */
+const RATE_LIMIT_RETRY_DELAYS_MS = [5000, 15000, 30000, 60000];
+
+/**
+ * After a throttle, turns are spaced out for a while so the next burst does not run straight back
+ * into it. Before one, requests go at full speed.
+ */
+const THROTTLED_MIN_INTERVAL_MS = 6000;
+const THROTTLED_PACING_MS = 5 * 60_000;
+
+/** Backoff after a dropped connection. Prompts here are ~100 KB, so retries are not free — two
+ *  attempts, then give the error to the user. */
+const NETWORK_RETRY_DELAYS_MS = [1000, 3000];
+
+/** Where the Expert model falls back to when the upstream is overloaded. */
+const DEFAULT_MODEL_ID = 'deepseek-web';
+
+/**
+ * How much text one upstream session may accumulate before it is abandoned.
+ *
+ * The whole conversation is resent as a single prompt on every turn, so a session that chains its
+ * messages holds that history once per turn and runs into DeepSeek's "Length limit reached. Please
+ * start a new chat." after a few of them. Rolling over to a new session beforehand keeps that
+ * failure out of the chat; nothing is lost, because the prompt carries the history anyway.
+ */
+const SESSION_CONTEXT_BUDGET_TOKENS = MAX_PROMPT_TOKENS;
+
+/**
+ * Prompt budgets for the retries after the upstream reported a length limit, as a share of what it
+ * just refused. The window depends on the account and the language, so it is found by halving
+ * rather than assumed. Floor below: a turn carrying too little is not useful.
+ */
+const SHRUNK_PROMPT_FRACTIONS = [0.5, 0.25, 0.12];
+const MIN_PROMPT_CHARS = 20_000;
+
+const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** One retry of the request: where to send it and with which model. */
+interface Attempt {
+  sessionId: string;
+  parentId?: number;
+  model?: string;
+  maxPromptChars?: number;
+}
+
+/** The upstream session a conversation chains onto, and how much it already holds. */
+interface ConversationSession {
+  sessionId: string;
+  parentMessageId?: number;
+  /** Text already pushed into the session, prompts plus answers. */
+  usedChars: number;
+  /** Prompt budget a length-limited conversation was last accepted at. */
+  promptCap?: number;
+}
+
+/**
+ * Stable key for the upstream chat/session cache: same model + same opening user message means the
+ * same conversation (the reference project's `conversationKey`).
+ */
+function conversationKeyOf(request: LlmRequest): string {
+  const first = request.messages.find((message) => message.role === 'user');
+  const basis = `${request.model}::${(first?.content ?? '').slice(0, 600)}`;
+
+  let hash = 2166136261;
+  for (let i = 0; i < basis.length; i++) {
+    hash ^= basis.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16);
+}
+
+/** Roughly what the prompt will weigh for this request, capped by a known-good budget. */
+function estimatePromptChars(request: LlmRequest, cap?: number): number {
+  let total = 0;
+  for (const message of request.messages) {
+    if (message.role === 'system') continue;
+    total += message.content.length;
+  }
+  return Math.min(total, cap ?? charBudgetForTokens(request.messages, MAX_PROMPT_TOKENS));
+}
+
+/** One generation per ACCOUNT, not per session: another request is still being answered. */
+function isParallelLimit(error: unknown): boolean {
+  return error instanceof Error && /parallel_chat_limit|message is being generated/i.test(error.message);
+}
+
+/** The account sent too many turns too quickly — reported inside the stream, not as HTTP 429. */
+function isRateLimited(error: unknown): boolean {
+  return error instanceof Error && /rate_limit_reached|messages too frequent|too many requests/i.test(error.message);
+}
+
+/** The server is still generating the previous answer in this session. */
+function isSessionBusy(error: unknown): boolean {
+  return error instanceof Error && /biz error\s*11|message still wip/i.test(error.message);
+}
+
+/** parent_message_id points at a message the session no longer knows. */
+function isStaleParent(error: unknown): boolean {
+  return error instanceof Error && /biz error\s*26|invalid message id/i.test(error.message);
+}
+
+/** The session id is not one the account has: deleted from the DeepSeek UI, or dropped upstream. */
+function isUnknownSession(error: unknown): boolean {
+  return error instanceof Error && /invalid chat session|chat session (?:not found|does not exist)|biz error\s*1\b/i.test(error.message);
+}
+
+/** The turn does not fit — a session that ran out of room, or a single prompt over the window. */
+function isContextLimit(error: unknown): boolean {
+  return error instanceof Error && /context_length_exceeded|input_exceeds_limit|length limit reached|content is too long|start a new chat/i.test(error.message);
+}
+
+/** The Expert model itself is overloaded; the upstream suggests the default one. */
+function isExpertBusy(error: unknown): boolean {
+  return error instanceof Error && /expert_busy_use_default/i.test(error.message);
+}
+
+/** A dropped connection — common enough on the free web backend that one must not surface. */
+function isNetworkFailure(error: unknown): boolean {
+  return error instanceof Error && /fetch failed|terminated|socket hang up|network error|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|EAI_AGAIN|ENOTFOUND|UND_ERR/i.test(error.message);
+}
+
+function isRecoverable(error: unknown): boolean {
+  return (
+    isSessionBusy(error) ||
+    isStaleParent(error) ||
+    isParallelLimit(error) ||
+    isRateLimited(error) ||
+    isExpertBusy(error) ||
+    isUnknownSession(error) ||
+    isContextLimit(error) ||
+    isNetworkFailure(error)
+  );
+}
+
+/**
+ * A non-SSE completion answer: DeepSeek reports auth expiry, account mutes and throttles as JSON
+ * with HTTP 200. Parsed into something a user can act on instead of raw JSON.
+ */
+function completionError(status: number, text: string): Error {
+  let message = `HTTP ${status}: ${text.slice(0, 220)}`;
+  try {
+    const parsed = JSON.parse(text) as { code?: number; msg?: string; data?: { biz_code?: number; biz_msg?: string } };
+    if (parsed.code === 40002 || parsed.code === 40003) return new DeepSeekAuthExpiredError();
+    if (typeof parsed.data?.biz_code === 'number') {
+      message = `DeepSeek biz error ${parsed.data.biz_code}: ${parsed.data.biz_msg ?? ''}`;
+    } else if (parsed.msg) {
+      message = parsed.msg;
+    }
+  } catch {
+    /* not JSON — keep the raw message */
+  }
+  return new Error(message);
+}
+
 export class DeepSeekWebAdapter implements ProviderAdapter {
   readonly id = DEEPSEEK_WEB_PROVIDER_ID;
   readonly name = 'DeepSeek Web (chat.deepseek.com)';
   private auth: DeepSeekAuth | null = null;
+  /** DeepSeek allows one generation per account: requests are serialized behind a single slot. */
+  private queue: Promise<unknown> = Promise.resolve();
+  private lastRequestAt = 0;
+  private paceUntil = 0;
+  /** Reused upstream session per conversation — a fresh session per turn is bot-shaped traffic. */
+  private readonly sessionByConversation = new Map<string, ConversationSession>();
 
   constructor(private readonly options: DeepSeekWebOptions = {}) {}
 
@@ -651,39 +820,189 @@ export class DeepSeekWebAdapter implements ProviderAdapter {
     }
 
     const fetchImpl = this.options.fetchImpl ?? fetch.bind(globalThis);
-    let sessionId: string | undefined;
-    let messageId: number | undefined;
+    // The wait can outlive the request that was queued; the abort check below catches that.
+    const release = await this.acquireSlot();
     try {
       if (request.signal.aborted) {
         yield { type: 'finish', reason: 'cancelled' };
         return;
       }
-      const prompt = buildDeepSeekPrompt(request.messages, request.tools);
-      const modelType = request.model === 'deepseek-web-expert' ? 'expert' : 'default';
+      yield* this.streamInSlot(request, auth, fetchImpl);
+    } catch (error) {
+      if (request.signal.aborted || isAbortError(error)) {
+        yield { type: 'finish', reason: 'cancelled' };
+        return;
+      }
+      const expired = error instanceof DeepSeekAuthExpiredError;
+      yield {
+        type: 'error',
+        error: { code: expired ? 'AUTH_EXPIRED' : 'stream_error', message: error instanceof Error ? error.message : String(error), retryable: !expired },
+      };
+      yield { type: 'finish', reason: 'error' };
+    } finally {
+      release();
+    }
+  }
+
+  /** One request with its recovery ladder, inside the account's single generation slot. */
+  private async *streamInSlot(
+    request: LlmRequest,
+    auth: DeepSeekAuth,
+    fetchImpl: typeof fetch,
+  ): AsyncGenerator<StreamEvent> {
+    const key = conversationKeyOf(request);
+    const entry = this.sessionByConversation.get(key);
+    let sessionId = entry?.sessionId;
+    let parentMessageId = entry?.parentMessageId;
+    const promptCap = entry?.promptCap;
+    const promptChars = estimatePromptChars(request, promptCap);
+
+    // A session that chains its turns accumulates the history server-side and eventually answers
+    // "Length limit reached". Roll over BEFORE that: the prompt carries the history anyway.
+    const sessionBudget = charBudgetForTokens(request.messages, SESSION_CONTEXT_BUDGET_TOKENS);
+    if (sessionId !== undefined && (entry?.usedChars ?? 0) + promptChars > sessionBudget) {
+      sessionId = undefined;
+    }
+
+    if (sessionId === undefined) {
+      sessionId = await this.createSessionWithRetry(auth, request.signal, fetchImpl);
+      this.sessionByConversation.set(key, { sessionId, usedChars: 0 });
+      parentMessageId = undefined;
+    }
+
+    // Anything already shown to the user makes a retry unsafe: the answer would stream twice.
+    const ctx = { streamedToUser: false };
+
+    const waitAndRetry = (ms: number, reason: string) => async (): Promise<Attempt> => {
+      await delay(ms);
+      return { sessionId, parentId: parentMessageId, maxPromptChars: promptCap };
+    };
+    const useDefaultModel = async (): Promise<Attempt> => ({
+      sessionId,
+      parentId: parentMessageId,
+      model: DEFAULT_MODEL_ID,
+      maxPromptChars: promptCap,
+    });
+    const withoutParent = async (): Promise<Attempt> => {
+      const current = this.sessionByConversation.get(key);
+      if (current) this.sessionByConversation.set(key, { ...current, parentMessageId: undefined });
+      return { sessionId, maxPromptChars: promptCap };
+    };
+    const freshSession = async (): Promise<Attempt> => {
+      const fresh = await this.createSessionWithRetry(auth, request.signal, fetchImpl);
+      this.sessionByConversation.set(key, { sessionId: fresh, usedChars: 0 });
+      return { sessionId: fresh, maxPromptChars: promptCap };
+    };
+    const shrinkPrompt = (chars: number) => async (): Promise<Attempt> => ({
+      sessionId: this.sessionByConversation.get(key)?.sessionId ?? sessionId,
+      maxPromptChars: chars,
+    });
+
+    const stepsFor = (error: unknown): Array<() => Promise<Attempt>> => {
+      // Checked before the slot limit: both mean "come back later", but only this one is counted
+      // per account over a window rather than per request.
+      if (isRateLimited(error)) {
+        this.paceUntil = Date.now() + THROTTLED_PACING_MS;
+        return (this.options.retryDelays?.rateLimit ?? RATE_LIMIT_RETRY_DELAYS_MS).map((ms, i) =>
+          i === 0 ? waitAndRetry(ms, 'rate limited') : waitAndRetry(ms, 'rate limited'),
+        );
+      }
+      if (isParallelLimit(error)) {
+        return (this.options.retryDelays?.parallelLimit ?? PARALLEL_LIMIT_RETRY_DELAYS_MS).map((ms) =>
+          waitAndRetry(ms, 'generation slot busy'),
+        );
+      }
+      if (isNetworkFailure(error)) {
+        return (this.options.retryDelays?.network ?? NETWORK_RETRY_DELAYS_MS).map((ms) =>
+          waitAndRetry(ms, 'connection failed'),
+        );
+      }
+      if (isExpertBusy(error)) return [useDefaultModel];
+      if (isSessionBusy(error)) return [freshSession];
+      if (isUnknownSession(error)) return [freshSession];
+      if (isContextLimit(error)) {
+        // Halve down from what was actually sent: a budget at or above the refused size would
+        // resend the very same prompt and burn a retry on a certain failure.
+        const refused = estimatePromptChars(request, promptCap);
+        const budgets = [
+          ...new Set(
+            SHRUNK_PROMPT_FRACTIONS
+              .map((share) => Math.max(MIN_PROMPT_CHARS, Math.floor(refused * share)))
+              .filter((chars) => chars < refused),
+          ),
+        ];
+        const shrinks = budgets.map((chars) => shrinkPrompt(chars));
+        return (entry?.usedChars ?? 0) > 0 ? [freshSession, ...shrinks] : shrinks;
+      }
+      return [withoutParent, freshSession];
+    };
+
+    let lastError: unknown;
+    try {
+      yield* this.attemptStream(request, auth, fetchImpl, key, ctx, {
+        sessionId,
+        parentId: parentMessageId,
+        maxPromptChars: promptCap,
+      });
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+
+    for (const step of stepsFor(lastError)) {
+      if (!isRecoverable(lastError) || ctx.streamedToUser || request.signal.aborted) break;
+      try {
+        const attempt = await step();
+        yield* this.attemptStream(request, auth, fetchImpl, key, ctx, {
+          ...attempt,
+          maxPromptChars: attempt.maxPromptChars ?? promptCap,
+        });
+        return;
+      } catch (retryError) {
+        lastError = retryError;
+      }
+    }
+
+    throw lastError;
+  }
+
+  /** One completion attempt: PoW, the SSE patch stream, the tool-call router, session bookkeeping. */
+  private async *attemptStream(
+    request: LlmRequest,
+    auth: DeepSeekAuth,
+    fetchImpl: typeof fetch,
+    key: string,
+    ctx: { streamedToUser: boolean },
+    attempt: Attempt,
+  ): AsyncGenerator<StreamEvent> {
+    await this.pace(request.signal);
+    let messageId: number | undefined;
+    try {
+      const prompt = buildDeepSeekPrompt(request.messages, request.tools, { maxChars: attempt.maxPromptChars });
+      const modelType = attempt.model === 'deepseek-web-expert' || (attempt.model === undefined && request.model === 'deepseek-web-expert') ? 'expert' : 'default';
+      // Thinking stays off whenever tools are in play: reasoning + tool calls is unreliable on the
+      // web backend — the call leaks into the reasoning channel and never reaches the router.
+      const thinkingEnabled = modelType === 'expert' && request.tools.length === 0;
       // The web API has no tool channel: when tools are present the router watches the text for the
       // protocol the system prompt asked for, and the raw markers never reach the client.
       const router = new StreamingToolCallRouter(request.tools.length > 0);
       let sawToolCall = false;
+      let produced = false;
+      let answerChars = 0;
       let stoppedUpstream = false;
-
-      const session = await this.requestJson(CREATE_SESSION_PATH, auth, {}, request.signal, fetchImpl);
-      sessionId = session.data?.biz_data?.id ?? session.data?.biz_data?.chat_session?.id;
-      if (sessionId === undefined) {
-        throw new Error(`Failed to get DeepSeek session id: ${JSON.stringify(session).slice(0, 250)}`);
-      }
 
       const powHeader = await this.powHeader(auth, COMPLETION_PATH, fetchImpl);
       const response = await fetchImpl(`${BASE_URL}${COMPLETION_PATH}`, {
         method: 'POST',
         headers: { ...this.buildHeaders(auth), 'X-DS-PoW-Response': powHeader },
         body: JSON.stringify({
-          chat_session_id: sessionId,
-          parent_message_id: null,
+          chat_session_id: attempt.sessionId,
+          parent_message_id: attempt.parentId ?? null,
           model_type: modelType,
           preempt: false,
           prompt,
           ref_file_ids: [],
-          thinking_enabled: modelType === 'expert',
+          thinking_enabled: thinkingEnabled,
           search_enabled: false,
         }),
         signal: request.signal,
@@ -691,8 +1010,7 @@ export class DeepSeekWebAdapter implements ProviderAdapter {
 
       const contentType = String(response.headers.get('content-type') ?? '');
       if (!response.ok || !contentType.includes('text/event-stream')) {
-        const body = await response.text().catch(() => '');
-        throw new Error(`HTTP ${response.status}: ${body.slice(0, 220)}`);
+        throw completionError(response.status, await response.text().catch(() => ''));
       }
       if (!response.body) throw new Error('Response body is empty');
 
@@ -706,55 +1024,123 @@ export class DeepSeekWebAdapter implements ProviderAdapter {
         } catch {
           continue;
         }
+        // In-stream failure frames (throttle, slot limit) throw so the recovery ladder can react.
         const biz = bizErrorOf(parsed);
-        if (biz !== null) {
-          await this.stopStream(auth, sessionId, messageId, fetchImpl).catch(() => undefined);
-          yield { type: 'error', error: { code: 'stream_error', message: biz, retryable: false } };
-          yield { type: 'finish', reason: 'error' };
-          return;
-        }
+        if (biz !== null) throw new Error(biz);
         const delta = extractDelta(parsed, cache, state);
         if (delta.messageId !== null) messageId = delta.messageId;
-        if (delta.thinking !== '') yield { type: 'reasoning_delta', text: delta.thinking };
+        if (delta.thinking !== '') {
+          answerChars += delta.thinking.length;
+          yield { type: 'reasoning_delta', text: delta.thinking };
+        }
         if (delta.text === '') continue;
         for (const chunk of router.route(delta.text)) {
+          if (chunk.type === 'text') {
+            produced = true;
+            ctx.streamedToUser = true;
+            answerChars += chunk.content.length;
+          }
+          if (chunk.type === 'tool_call') {
+            produced = true;
+            ctx.streamedToUser = true;
+            sawToolCall = true;
+          }
           yield* mapToolCallChunk(chunk);
-          if (chunk.type === 'tool_call') sawToolCall = true;
         }
         // The router saw the model playing out the transcript — a fabricated next turn. Stop the
         // upstream so it stops burning tokens; the rest of the answer is already discarded.
         if (router.cut && !stoppedUpstream) {
           stoppedUpstream = true;
-          await this.stopStream(auth, sessionId, messageId, fetchImpl).catch(() => undefined);
+          await this.stopStream(auth, attempt.sessionId, messageId, fetchImpl).catch(() => undefined);
         }
       }
       if (request.signal.aborted) {
-        // The loop above breaks on abort before the fetch body notices, so the same server-side
-        // stop is needed here as in the catch below — a "wip" message would poison the session.
-        await this.stopStream(auth, sessionId, messageId, fetchImpl).catch(() => undefined);
-        yield { type: 'finish', reason: 'cancelled' };
-        return;
+        // The loop breaks on abort before the fetch body notices — the same server-side stop is
+        // needed here as in the catch below: a "wip" message would poison the session.
+        await this.stopStream(auth, attempt.sessionId, messageId, fetchImpl).catch(() => undefined);
+        throw Object.assign(new Error('DeepSeek stream aborted'), { name: 'AbortError' });
       }
       for (const chunk of router.finish()) {
+        if (chunk.type === 'text') {
+          produced = true;
+          ctx.streamedToUser = true;
+          answerChars += chunk.content.length;
+        }
+        if (chunk.type === 'tool_call') {
+          produced = true;
+          ctx.streamedToUser = true;
+          sawToolCall = true;
+        }
         yield* mapToolCallChunk(chunk);
-        if (chunk.type === 'tool_call') sawToolCall = true;
+      }
+
+      // Chain onto this message only if the turn actually said something: an empty answer leaves an
+      // id the session does not accept back ("invalid message id" on the next turn).
+      const current = this.sessionByConversation.get(key);
+      if (current) {
+        this.sessionByConversation.set(key, {
+          ...current,
+          sessionId: attempt.sessionId,
+          parentMessageId: produced && messageId !== undefined ? messageId : undefined,
+          usedChars: current.usedChars + estimatePromptChars(request, attempt.maxPromptChars) + answerChars,
+          promptCap: attempt.maxPromptChars !== undefined ? attempt.maxPromptChars : current.promptCap,
+        });
       }
       yield { type: 'finish', reason: sawToolCall ? 'tool_calls' : 'stop' };
     } catch (error) {
       if (request.signal.aborted || isAbortError(error)) {
         // A plain disconnect leaves the message "wip" and the session refuses the next request, so
         // the generation is stopped server-side before the stream is abandoned.
-        if (sessionId !== undefined) await this.stopStream(auth, sessionId, messageId, fetchImpl).catch(() => undefined);
-        yield { type: 'finish', reason: 'cancelled' };
-        return;
+        await this.stopStream(auth, attempt.sessionId, messageId, fetchImpl).catch(() => undefined);
       }
-      const expired = error instanceof DeepSeekAuthExpiredError;
-      yield {
-        type: 'error',
-        error: { code: expired ? 'AUTH_EXPIRED' : 'stream_error', message: error instanceof Error ? error.message : String(error), retryable: !expired },
-      };
-      yield { type: 'finish', reason: 'error' };
+      throw error;
     }
+  }
+
+  /** Serializes requests: DeepSeek allows one generation per account, not per session. */
+  private async acquireSlot(): Promise<() => void> {
+    const previous = this.queue;
+    let release!: () => void;
+    this.queue = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous.catch(() => undefined);
+    return release;
+  }
+
+  /** Spaces requests out while the account was recently throttled. */
+  private async pace(signal: AbortSignal): Promise<void> {
+    const now = Date.now();
+    if (now < this.paceUntil) {
+      const wait = this.lastRequestAt + THROTTLED_MIN_INTERVAL_MS - now;
+      if (wait > 0 && !signal.aborted) await delay(wait);
+    }
+    this.lastRequestAt = Date.now();
+  }
+
+  /**
+   * Session creation happens before the streaming recovery ladder can help, so it carries its own
+   * retry: the TLS handshake to chat.deepseek.com gets reset often enough that a single failure
+   * must not surface as a chat error.
+   */
+  private async createSessionWithRetry(auth: DeepSeekAuth, signal: AbortSignal, fetchImpl: typeof fetch): Promise<string> {
+    const delays = this.options.retryDelays?.network ?? NETWORK_RETRY_DELAYS_MS;
+    let lastError: unknown = undefined;
+    for (let attempt = 0; attempt <= delays.length; attempt++) {
+      if (attempt > 0) await delay(delays[attempt - 1] ?? 0);
+      try {
+        const session = await this.requestJson(CREATE_SESSION_PATH, auth, {}, signal, fetchImpl);
+        const id = session.data?.biz_data?.id ?? session.data?.biz_data?.chat_session?.id;
+        if (id === undefined) {
+          throw new Error(`Failed to get DeepSeek session id: ${JSON.stringify(session).slice(0, 250)}`);
+        }
+        return id;
+      } catch (error) {
+        lastError = error;
+        if (!isNetworkFailure(error) || signal.aborted) throw error;
+      }
+    }
+    throw lastError;
   }
 
   /** Maps a routed chunk onto the stream events the loop understands. */

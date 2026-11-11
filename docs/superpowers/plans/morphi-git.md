@@ -314,14 +314,32 @@ measured by that MIT-licensed project and is ported here:
   sees; the char budget is derived from a 75k-token cap measured per conversation (CJK costs ~2.7×
   the tokens per character that latin does). `parseToolCallsFromText` drops text before the marker
   by design — in the stream that text was already emitted while the buffer was still pending.
+- **Resilience / anti-flag layer** (ported from `DeepSeekProvider.ts`, the part that keeps an
+  account alive): the upstream session is REUSED per conversation (`conversationKey` = model + first
+  600 chars of the opening user message) and turns chain via `parent_message_id` — a fresh session
+  per turn is bot-shaped traffic. A session is rolled over before its server-side history window
+  fills (tracked in chars, converted per conversation). All requests serialize behind one slot
+  (DeepSeek allows ONE generation per account — parallel ones die with `parallel_chat_limit`).
+  After a throttle ("Messages too frequent") turns are spaced ≥6 s apart for 5 minutes. Recovery
+  ladders by error class: slot busy → 1.5 s/4 s; throttle → 5 s/15 s/30 s/60 s; network → 1 s/3 s
+  (also around session creation); Expert overloaded → fall back to the default model; stale
+  `parent_message_id` → retry without it; dead session (biz 1) or busy session (biz 11) → fresh
+  session; context limit → fresh session then prompt shrink ladder ½/¼/⅛ (floor 20k chars).
+  Retries stop the moment anything was streamed to the user. Thinking is FORCED OFF whenever tools
+  are present — on the web backend the tool call leaks into the reasoning channel, where the router
+  would never see it. A non-SSE completion answer (HTTP 200 JSON: mutes, throttles) is parsed into a
+  clean `DeepSeek biz error N: message` instead of raw JSON.
 - v1 scope: text + thinking streaming. Models `deepseek-web` / `deepseek-web-expert` (expert =
   DeepThink), 128k context.
 
-Verification: 34 unit tests over an injected `fetch` + injected PoW solver (never touches the
-network), incl. the router's split-marker hold, false-positive release, transcript cut and the
-parser's dialect set; registry priority and the env key wired; client card renders generically with
-the DeepSeek mark. A live sign-in round-trip is still untested — the credential capture is manual by
-design.
+Verification: 37 provider tests over an injected `fetch` + injected PoW solver (never touches the
+network), incl. the router's split-marker hold, false-positive release, transcript cut, the
+parser's dialect set, session reuse + parent chaining, the mute error shape and thinking-off-with-
+tools; registry priority and the env key wired; client card renders generically with the DeepSeek
+mark. Live sign-in helper: `server/scripts/deepseek-web-login.cjs` (Playwright on the system Chrome,
+persistent profile, captures the Bearer from the first `/api/v0/` call — same as the reference's
+auth manager) writes `server/.deepseek-auth.json`; `server/scripts/deepseek-web-live.ts` runs one
+real tool turn against it.
 
 ## Post-Phase-2 notes (live verified)
 

@@ -36,6 +36,8 @@ function fakeFetch(options: {
   stream?: unknown[];
   completionStatus?: number;
   completionBody?: string;
+  /** A completion answered with plain JSON (HTTP 200) — biz errors, mutes, throttles. */
+  completionJson?: DeepSeekJson;
 } = {}): typeof fetch & { calls: Array<{ url: string; init?: RequestInit }> } {
   const calls: Array<{ url: string; init?: RequestInit }> = [];
   const impl = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -48,6 +50,7 @@ function fakeFetch(options: {
       });
     }
     if (url.includes('chat/completion')) {
+      if (options.completionJson !== undefined) return jsonResponse(options.completionJson);
       if (options.completionStatus !== undefined && options.completionStatus !== 200) {
         return new Response(options.completionBody ?? 'nope', { status: options.completionStatus });
       }
@@ -226,6 +229,47 @@ describe('DeepSeekWebAdapter.stream', () => {
         expect(String(body.prompt)).toContain('# Tool usage protocol (MANDATORY)');
     });
 
+    it('reuses the upstream session for the same conversation and chains parent_message_id', async () => {
+        const fetchImpl = fakeFetch({
+            stream: [{ o: 'BATCH', v: [{ response_message_id: 41 }, { p: 'response/content', o: 'APPEND', v: 'ok' }] }],
+        });
+        const adapterUnderTest = adapter(fetchImpl);
+        const messages = [{ role: 'user' as const, content: 'Cùng một hội thoại' }];
+        await collect(adapterUnderTest.stream(request({ messages })));
+        await collect(adapterUnderTest.stream(request({ messages })));
+        const completions = fetchImpl.calls.filter((call) => call.url.includes('chat/completion'));
+        expect(completions).toHaveLength(2);
+        // One session for the conversation, the second turn chained onto the first message.
+        expect(fetchImpl.calls.filter((call) => call.url.includes('chat_session/create'))).toHaveLength(1);
+        const second = JSON.parse(String(completions[1]?.init?.body)) as Record<string, unknown>;
+        expect(second.parent_message_id).toBe(41);
+    });
+
+    it('reports an account mute as a clean biz error instead of raw JSON', async () => {
+        const fetchImpl = fakeFetch({
+            completionJson: { code: 0, msg: '', data: { biz_code: 5, biz_msg: 'user is muted', biz_data: { is_muted: 1 } } },
+        });
+        const events = await collect(adapter(fetchImpl).stream(request()));
+        expect(events).toContainEqual({
+            type: 'error',
+            error: { code: 'stream_error', message: 'DeepSeek biz error 5: user is muted', retryable: true },
+        });
+    });
+
+    it('forces thinking off when tools are present, even on the expert model', async () => {
+        const fetchImpl = fakeFetch({ stream: [{ p: 'response/content', o: 'APPEND', v: 'ok' }] });
+        await collect(
+            adapter(fetchImpl).stream(
+                request({
+                    model: 'deepseek-web-expert',
+                    tools: [{ name: 'x', description: 'x', parameters: { type: 'object', properties: {} } }],
+                }),
+            ),
+        );
+        const body = JSON.parse(String(fetchImpl.calls.find((call) => call.url.includes('chat/completion'))!.init?.body)) as Record<string, unknown>;
+        expect(body.thinking_enabled).toBe(false);
+    });
+
     it('maps the expert model to thinking_enabled', async () => {
         const fetchImpl = fakeFetch({ stream: [{ p: 'response/content', o: 'APPEND', v: 'ok' }] });
         await collect(adapter(fetchImpl).stream(request({ model: 'deepseek-web-expert' })));
@@ -234,14 +278,19 @@ describe('DeepSeekWebAdapter.stream', () => {
         expect(body.thinking_enabled).toBe(true);
     });
 
-    it('reports an in-stream biz error and stops the generation server-side', async () => {
+    it('retries a busy generation slot, then reports the in-stream biz error', async () => {
         const fetchImpl = fakeFetch({
             stream: [{ type: 'error', content: 'too many generations', finish_reason: 'parallel_chat_limit' }],
         });
-        const events = await collect(adapter(fetchImpl).stream(request()));
-        expect(events).toContainEqual({ type: 'error', error: { code: 'stream_error', message: 'too many generations (parallel_chat_limit)', retryable: false } });
+        const adapterUnderTest = new DeepSeekWebAdapter({ fetchImpl, solver: () => SOLVED.answer, retryDelays: { parallelLimit: [1, 1] } });
+        adapterUnderTest.setApiKey(JSON.stringify(AUTH));
+        const events = await collect(adapterUnderTest.stream(request()));
+        // Three attempts (initial + two backoff retries), then the error reaches the user.
+        expect(fetchImpl.calls.filter((call) => call.url.includes('chat/completion'))).toHaveLength(3);
+        expect(events).toContainEqual({ type: 'error', error: { code: 'stream_error', message: 'too many generations (parallel_chat_limit)', retryable: true } });
         expect(events.at(-1)).toMatchObject({ type: 'finish', reason: 'error' });
-        expect(fetchImpl.calls.some((call) => call.url.includes('stop_stream'))).toBe(true);
+        // The upstream is not generating for us — there is nothing to stop.
+        expect(fetchImpl.calls.some((call) => call.url.includes('stop_stream'))).toBe(false);
     });
 
     it('maps 40002 to an auth-expired error the user can act on', async () => {
