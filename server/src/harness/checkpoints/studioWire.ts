@@ -56,15 +56,32 @@ const LUAU_CANDIDATES = ['execute_luau', 'studio.execute_luau'] as const;
 const DATAMODEL = 'Edit';
 
 /** One thing the mutation can be undone from. */
+/**
+ * One instance of a subtree captured BEFORE it is deleted, so the restore can recreate it.
+ *
+ * Only what the wire can round-trip is stored: the class name, the name, the restorable property
+ * bag (see `restorableProperties`) and the children in order. A child's `path` is stored so the
+ * recreate can parent it by path instead of re-deriving names, which would break on a name edit.
+ */
+export interface InstanceNode {
+  path: string;
+  className: string;
+  name: string;
+  properties: Record<string, unknown>;
+  children: InstanceNode[];
+}
+
 export type SnapshotEntry =
   | { kind: 'script'; path: string; source: string }
   | { kind: 'properties'; path: string; properties: Record<string, unknown> }
-  | { kind: 'inserted'; path: string };
+  | { kind: 'inserted'; path: string }
+  | { kind: 'deleted'; path: string; tree: InstanceNode };
 
 export type InverseStep =
   | { tool: 'script_write'; path: string; source: string }
   | { tool: 'set_properties'; path: string; properties: Record<string, unknown> }
-  | { tool: 'delete_instance'; path: string };
+  | { tool: 'delete_instance'; path: string }
+  | { tool: 'recreate_instance'; path: string; tree: InstanceNode };
 
 /** Normalise a `script_read` answer to bare source text (strips `N→` line prefixes). */
 export function scriptSourceFrom(result: unknown): string | null {
@@ -349,11 +366,39 @@ export function restorableProperties(bag: Record<string, unknown>): Record<strin
   const restorable: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(bag)) {
     if (key.includes('.')) continue;
+    if (NEVER_WRITABLE.has(key)) continue;
     const type = typeof value;
     if (type === 'number' || type === 'boolean' || type === 'string') restorable[key] = value;
   }
   return restorable;
 }
+
+/**
+ * Keys no restore can ever assign, whatever the value.
+ *
+ * MEASURED LIVE, each with Studio's own refusal: `UniqueId` — "The current thread cannot write
+ * 'UniqueId' (lacking capability RobloxScript)"; `Capabilities` and `ExplorerIconContent` arrive as
+ * an empty string but want an object (`SecurityCapabilities`/`Content`); `ClassName` and `Parent` are
+ * structural and assigned by the recreate itself.
+ *
+ * `BrickColor` is here for a different reason, MEASURED LIVE too: it is a legacy MIRROR of `Color`,
+ * and writing it fights the exact colour. A part restored from `Color = 200,40,90` came back as
+ * `205,84,75` — Neon's own colour — because `BrickColor = "Neon"` was assigned afterwards and won.
+ * Leaving it out lets `Color` (which round-trips exactly) stay the source of truth.
+ *
+ * They are dropped at capture time rather than at write time so the report stays honest: a `skipped`
+ * entry must mean "this restore lost something", not "this bag always contains fields nobody can
+ * write". A restore that lists them on every undo teaches the user to ignore the list.
+ */
+const NEVER_WRITABLE: ReadonlySet<string> = new Set([
+  'ClassName',
+  'Parent',
+  'UniqueId',
+  'Capabilities',
+  'ExplorerIconContent',
+  'RobloxLocked',
+  'BrickColor',
+]);
 
 /**
  * Turn an `inspect_instance` string value into a Luau literal that re-applies, when the wire's
@@ -366,20 +411,23 @@ export function restorableProperties(bag: Record<string, unknown>): Record<strin
  * Only comma-triples of numbers and dotted BrickColor names are reconstructed — both are unambiguous,
  * so a misparse cannot silently write a wrong value (it just fails the pcall and stays skipped).
  */
-export function reconstructValue(value: unknown): string {
+export function reconstructValue(value: unknown, key?: string): string {
   if (typeof value === 'string') {
+    // An enum arrives as the string `"Enum.Material.Plastic"`, which is ALREADY a valid Luau
+    // expression — emitting it as a JSON string (the old behaviour) made every enum property fail
+    // with `Invalid value "Enum.Material.Plastic"` and land in `skipped`. Both halves are checked
+    // against the identifier shape first, so a value like `"Enum..."` cannot inject code.
+    const enumItem = /^Enum\.([A-Za-z_]\w*)\.([A-Za-z_]\w*)$/.exec(value);
+    if (enumItem) {
+      return `Enum.${enumItem[1]}.${enumItem[2]}`;
+    }
     const triple = value.match(/^\s*(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)\s*$/);
     if (triple) {
       return `Vector3.new(${triple[1]}, ${triple[2]}, ${triple[3]})`;
     }
-    // A BrickColor name is a multi-word proper noun WITH spaces, e.g. "Bright red", "Medium stone
-    // grey". A single-word string like `CollisionGroup: "Default"` or `MaterialVariant: ""` is a real
-    // string property and must stay a plain string — reconstructing it as BrickColor.new would make
-    // Luau reject the assignment ("string expected, got BrickColor"), which is exactly the live bug
-    // this guard closes.
-    if (/^[A-Za-z]+(?: [A-Za-z]+)+$/.test(value)) {
-      return `BrickColor.new(${JSON.stringify(value)})`;
-    }
+    // No string->BrickColor heuristic: `BrickColor` is now dropped at capture time (see
+    // NEVER_WRITABLE), and guessing it for any other key turned plain string properties like
+    // `MaterialVariant: "Wood Grain"` into a BrickColor the pcall then rejected.
   }
   return JSON.stringify(value);
 }
@@ -426,15 +474,22 @@ export async function setInstanceProperties(
   // `reconstructValue` recovers Vector3/Color3/BrickColor literals from the lossy serialisation where
   // possible; any value it cannot recover stays a plain string, which the pcall rejects → skipped.
   const attempts = Object.entries(properties)
-    .map(([key, value]) => `attempt(${JSON.stringify(key)}, ${reconstructValue(value)})`)
+    .map(([key, value]) => `attempt(${JSON.stringify(key)}, ${reconstructValue(value, key)})`)
     .join('\n');
   const code = [
     resolveLuau(path),
     'local inst = root',
     'if inst == nil then return "error: not found" end',
     'local applied, failed = {}, {}',
+    // A comma-triple is ambiguous BY VALUE: `Size` is a Vector3 while `Color` is a Color3, and both
+    // arrive as `"x, y, z"`. MEASURED LIVE: emitting Vector3 for `Color` was refused with "Color3
+    // expected, got Vector3", so the colour of every restored part was silently lost. The retry uses
+    // Studio's own refusal to disambiguate instead of guessing a second time.
     'local function attempt(key, value)',
     '  local ok, err = pcall(function() inst[key] = value end)',
+    '  if not ok and typeof(value) == "Vector3" then',
+    '    ok, err = pcall(function() inst[key] = Color3.new(value.X, value.Y, value.Z) end)',
+    '  end',
     '  if ok then table.insert(applied, key)',
     '  else table.insert(failed, { key = key, reason = tostring(err) }) end',
     'end',
@@ -461,4 +516,229 @@ export async function setInstanceProperties(
       .map((entry) => ({ key: String((entry as { key?: unknown }).key ?? ''), reason: String((entry as { reason?: unknown }).reason ?? '') }))
     : [];
   return { applied, skipped };
+}
+
+/** How deep a captured subtree may go. A DeepSeek-sized tree would be thousands of bags. */
+const TREE_MAX_NODES = 200;
+const TREE_MAX_DEPTH = 4;
+
+/** A node as Luau reports it: everything but the property bag, which comes from `inspect_instance`. */
+export interface NodeOutline {
+  path: string;
+  className: string;
+  name: string;
+}
+
+/**
+ * Read the SHAPE of a subtree (paths, class names, names) without its properties.
+ *
+ * Deliberately not `inspect_instance` per node: that tool takes one path per call, so a subtree
+ * would cost a round trip per descendant. Luau walks the subtree once and reports only what the
+ * engine knows exactly (`ClassName`, `Name`) — the lossy property serialisation stays in the tool
+ * that was measured for it.
+ *
+ * Returns `null` when the path does not resolve: a missing instance must not become an empty tree,
+ * which would restore as "nothing to do" and silently lose the delete.
+ */
+export async function captureSubtree(
+  mcp: McpGateway,
+  path: string,
+  signal?: AbortSignal,
+): Promise<NodeOutline[] | null> {
+  const tool = await pickTool(mcp, LUAU_CANDIDATES, signal);
+  if (tool === undefined) return null;
+
+  const code = [
+    resolveLuau(path),
+    'if root == nil then return "error: not found" end',
+    'local nodes = {}',
+    'local function walk(inst, nodePath, depth)',
+    '  if #nodes >= ' + String(TREE_MAX_NODES) + ' then return end',
+    '  table.insert(nodes, { path = nodePath, className = inst.ClassName, name = inst.Name })',
+    '  if depth >= ' + String(TREE_MAX_DEPTH) + ' then return end',
+    // Only `Name` identifies a child on the wire (see resolveLuau); a duplicate name is reported
+    // twice rather than merged, and the recreate then assigns in order.
+    '  for _, child in ipairs(inst:GetChildren()) do',
+    '    walk(child, nodePath .. "." .. child.Name, depth + 1)',
+    '  end',
+    'end',
+    'walk(root, ' + JSON.stringify(path) + ', 0)',
+    'return game:GetService("HttpService"):JSONEncode({ nodes = nodes })',
+  ].join('\n');
+
+  const result = await mcp.callTool(tool.name, { code, datamodel_type: DATAMODEL }, signal);
+  if (isErrorText(result) || typeof result !== 'string') return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result);
+  } catch {
+    return null;
+  }
+  const nodes = (parsed as { nodes?: unknown } | null)?.nodes;
+  if (!Array.isArray(nodes) || nodes.length === 0) return null;
+  return nodes
+    .filter((node): node is Record<string, unknown> => node !== null && typeof node === 'object')
+    .map((node) => ({
+      path: String(node.path ?? ''),
+      className: String(node.className ?? ''),
+      name: String(node.name ?? ''),
+    }))
+    .filter((node) => node.path !== '' && node.className !== '');
+}
+
+/**
+ * Capture a subtree that is about to be deleted, with the property bag of every node.
+ *
+ * Bounded (TREE_MAX_NODES / TREE_MAX_DEPTH): beyond that the tree is dropped entirely rather than
+ * stored half-way, because a partial tree would recreate a mutilated instance and call it restored.
+ */
+export async function captureInstanceTree(
+  mcp: McpGateway,
+  path: string,
+  signal?: AbortSignal,
+): Promise<InstanceNode | null> {
+  const outline = await captureSubtree(mcp, path, signal);
+  if (outline === null) return null;
+  if (outline.length === 1 && outline[0].path !== path) return null;
+
+  const nodes = new Map<string, InstanceNode>();
+  for (const node of outline) {
+    const bag = await inspectInstance(mcp, node.path, signal);
+    // A node whose bag cannot be read is stored WITHOUT properties but with its shape: the class
+    // and the children are what makes the recreate possible at all, and the restore reports the
+    // property gap through `skipped` rather than dropping the whole subtree.
+    nodes.set(node.path, {
+      path: node.path,
+      className: node.className,
+      name: node.name,
+      properties: bag === null ? {} : restorableProperties(bag),
+      children: [],
+    });
+  }
+
+  const root = nodes.get(path);
+  if (root === undefined) return null;
+  for (const node of nodes.values()) {
+    if (node.path === path) continue;
+    const parentPath = node.path.slice(0, node.path.lastIndexOf('.'));
+    nodes.get(parentPath)?.children.push(node);
+  }
+  return root;
+}
+
+export interface RecreateResult {
+  created: string[];
+  skipped: Array<{ path: string; key: string; reason: string }>;
+}
+
+/**
+ * Recreate a captured subtree under its original parent.
+ *
+ * Parent FIRST, children in recorded order: a child can only be parented to an instance that
+ * already exists. Each node is one Luau call, so a single refused class (a plugin-owned type, a
+ * locked service) costs that node instead of the whole undo — the caller reports what it could not
+ * recreate rather than claiming a clean restore.
+ */
+export async function recreateInstance(
+  mcp: McpGateway,
+  path: string,
+  tree: InstanceNode,
+  signal?: AbortSignal,
+): Promise<RecreateResult> {
+  const created: string[] = [];
+  const skipped: RecreateResult['skipped'] = [];
+
+  const ordered: InstanceNode[] = [];
+  const queue: InstanceNode[] = [tree];
+  while (queue.length > 0) {
+    const node = queue.shift()!;
+    ordered.push(node);
+    queue.push(...node.children);
+  }
+
+  for (const node of ordered) {
+    const parentPath = node.path.includes('.') ? node.path.slice(0, node.path.lastIndexOf('.')) : '';
+    if (parentPath === '') {
+      skipped.push({ path: node.path, key: 'Parent', reason: 'Không xác định được đối tượng cha để tạo lại.' });
+      continue;
+    }
+    const props = Object.entries(node.properties)
+      .filter(([key]) => key !== 'ClassName' && key !== 'Parent')
+      .map(([key, value]) => `attempt(${JSON.stringify(key)}, ${reconstructValue(value, key)})`)
+      .join('\n');
+    const code = [
+      resolveLuau(parentPath),
+      'if root == nil then return "error: parent not found" end',
+      `local ok, inst = pcall(Instance.new, ${JSON.stringify(node.className)})`,
+      'if not ok or inst == nil then return "error: cannot create " .. ' + JSON.stringify(node.className) + ' end',
+      `inst.Name = ${JSON.stringify(node.name)}`,
+      'local failed = {}',
+      'local function attempt(key, value)',
+      '  local applied, err = pcall(function() inst[key] = value end)',
+      // Same Vector3/Color3 ambiguity as `setInstanceProperties`; see the note there.
+      '  if not applied and typeof(value) == "Vector3" then',
+      '    applied, err = pcall(function() inst[key] = Color3.new(value.X, value.Y, value.Z) end)',
+      '  end',
+      '  if not applied then table.insert(failed, { key = key, reason = tostring(err) }) end',
+      'end',
+      props,
+      'inst.Parent = root',
+      'return game:GetService("HttpService"):JSONEncode({ ok = true, failed = failed })',
+    ].join('\n');
+
+    const result = await mcp.callTool(await luauToolName(mcp, signal), { code, datamodel_type: DATAMODEL }, signal);
+    if (isErrorText(result) || typeof result !== 'string') {
+      skipped.push({ path: node.path, key: 'ClassName', reason: String(result ?? '').slice(0, 200) });
+      continue;
+    }
+    created.push(node.path);
+    try {
+      const parsed = JSON.parse(result) as { failed?: unknown };
+      if (Array.isArray(parsed.failed)) {
+        for (const entry of parsed.failed) {
+          if (entry === null || typeof entry !== 'object') continue;
+          skipped.push({
+            path: node.path,
+            key: String((entry as { key?: unknown }).key ?? ''),
+            reason: String((entry as { reason?: unknown }).reason ?? ''),
+          });
+        }
+      }
+    } catch {
+      // The node was created; only its property report is unreadable.
+    }
+  }
+
+  return { created, skipped };
+}
+
+/** The Luau tool name, or a literal that fails loudly when Studio has none. */
+async function luauToolName(mcp: McpGateway, signal?: AbortSignal): Promise<string> {
+  const tool = await pickTool(mcp, LUAU_CANDIDATES, signal);
+  if (tool === undefined) throw new Error('Studio không mở công cụ Luau để khôi phục.');
+  return tool.name;
+}
+
+/**
+ * Does this path still resolve? `null` means the probe itself failed, which is NOT "missing" — a
+ * restore that reads a failed probe as "gone" would recreate an instance over a live one.
+ */
+export async function instanceExists(
+  mcp: McpGateway,
+  path: string,
+  signal?: AbortSignal,
+): Promise<boolean | null> {
+  const tool = await pickTool(mcp, LUAU_CANDIDATES, signal);
+  if (tool === undefined) return null;
+  const code = [
+    resolveLuau(path),
+    'if root == nil then return "missing" end',
+    'return "exists"',
+  ].join('\n');
+  const result = await mcp.callTool(tool.name, { code, datamodel_type: DATAMODEL }, signal);
+  if (isErrorText(result) || typeof result !== 'string') return null;
+  const answer = result.trim().toLowerCase();
+  if (answer === 'missing') return false;
+  if (answer === 'exists') return true;
+  return null;
 }

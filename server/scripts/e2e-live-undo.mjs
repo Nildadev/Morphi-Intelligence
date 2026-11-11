@@ -208,13 +208,83 @@ const finalB = await readLive(B);
 check('both scripts back to v1', finalA.source === A1 && finalB.source === B1, `${JSON.stringify(finalA.source)} | ${JSON.stringify(finalB.source)}`);
 
 // ---------------------------------------------------------------------------------------------
+// Scenario 3 — a DELETE: the undo has to rebuild the instance from a pre-state capture
+// ---------------------------------------------------------------------------------------------
+console.log('\n[3] delete turn (execute_luau + Destroy)');
+const modelPath = 'Workspace.MorphiE2EModel';
+
+/** Create a Model with one Part and a Material, so the recreate has a subtree to rebuild. */
+async function seedModel() {
+  return withStudio(async (client) => {
+    const code = 'local lib = "Workspace"\n'
+      + 'local old = game:GetService(lib):FindFirstChild("MorphiE2EModel")\n'
+      + 'if old ~= nil then old:Destroy() end\n'
+      + 'local model = Instance.new("Model")\n'
+      + 'model.Name = "MorphiE2EModel"\n'
+      + 'local part = Instance.new("Part")\n'
+      + 'part.Name = "Chunk"\n'
+      + 'part.Material = Enum.Material.Plastic\n'
+      + 'part.Anchored = true\n'
+      + 'part.Parent = model\n'
+      + 'model.Parent = game:GetService(lib)\n'
+      + 'return "ok"';
+    const result = await client.callTool({ name: 'execute_luau', arguments: { code, datamodel_type: 'Edit' } });
+    return !result.isError;
+  });
+}
+
+/** The model's shape as Studio reports it, for a before/after comparison. */
+async function modelShape() {
+  return withStudio(async (client) => {
+    const code = 'local root = game:GetService("Workspace"):FindFirstChild("MorphiE2EModel")\n'
+      + 'if root == nil then return "missing" end\n'
+      + 'local names = {}\n'
+      + 'for _, child in ipairs(root:GetChildren()) do table.insert(names, child.ClassName .. ":" .. child.Name) end\n'
+      + 'return root.ClassName .. "|" .. table.concat(names, ",")';
+    const result = await client.callTool({ name: 'execute_luau', arguments: { code, datamodel_type: 'Edit' } });
+    return String(result.content?.find((part) => typeof part.text === 'string')?.text ?? '').trim();
+  });
+}
+
+check('seed model with a Part', await seedModel(), modelPath);
+const beforeShape = await modelShape();
+check('model shape before the turn', beforeShape.startsWith('Model|Part:Chunk'), beforeShape);
+
+const deleteSession = await newSession('e2e-delete-undo');
+const deleteTurn = await turn(deleteSession, '/script studio-delete');
+check('delete turn stream finished', deleteTurn.status === 200, `${deleteTurn.sse.length} bytes`);
+check('model really destroyed by the turn', (await modelShape()) === 'missing', JSON.stringify(await modelShape()));
+
+const del = await restorableCallIds(deleteSession);
+check('delete checkpoint recorded as restorable', del.restorable.length === 1,
+  `${del.restorable.length} restorable: ${del.callIds.join(', ')}`);
+if (del.restorable.length === 0) console.log(JSON.stringify(del.rows, null, 2).slice(0, 2000));
+
+const deleteUndo = await api('POST', `/api/sessions/${deleteSession}/undo-turn`, { callIds: del.callIds });
+check('delete undo-turn 200', deleteUndo.status === 200, JSON.stringify(deleteUndo.body).slice(0, 400));
+check('delete undo reported a restore', deleteUndo.body?.status === 'restored', JSON.stringify(deleteUndo.body).slice(0, 800));
+
+const afterShape = await modelShape();
+check('model recreated with its child', afterShape === beforeShape, `${JSON.stringify(afterShape)} vs ${JSON.stringify(beforeShape)}`);
+check('nothing reported as skipped on the recreate', Array.isArray(deleteUndo.body?.skipped) && deleteUndo.body.skipped.length === 0,
+  JSON.stringify(deleteUndo.body?.skipped));
+
+// The undo must never rebuild over something that came back by hand.
+await seedModel();
+const secondUndo = await api('POST', `/api/sessions/${deleteSession}/undo-turn`, { callIds: del.callIds });
+check('checkpoint is no longer restorable once restored', secondUndo.status >= 400 || secondUndo.body?.status !== 'restored',
+  JSON.stringify(secondUndo.body).slice(0, 400));
+
+// ---------------------------------------------------------------------------------------------
 // Cleanup — the place must not keep probe fixtures
 // ---------------------------------------------------------------------------------------------
 await destroyLive(A);
 await destroyLive(B);
+await destroyLive(modelPath);
 const goneA = await readLive(A);
 const goneB = await readLive(B);
 check('probe scripts removed from the place', !goneA.ok && !goneB.ok);
+check('probe model removed from the place', (await modelShape()) === 'missing');
 
 console.log(failures === 0 ? '\nE2E OK' : `\nE2E FAILED (${failures})`);
 process.exit(failures === 0 ? 0 : 1);

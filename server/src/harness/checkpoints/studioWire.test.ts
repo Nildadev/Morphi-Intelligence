@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { McpGateway, ToolSchema } from '../tools/types';
 import {
+  captureInstanceTree,
   deleteInstance,
   inspectInstance,
+  instanceExists,
   propertiesFrom,
+  recreateInstance,
   readScriptSource,
   restorableProperties,
   scriptSourceFrom,
@@ -140,12 +143,13 @@ describe('restorableProperties - the lossy bag', () => {
   };
 
   it('keeps every scalar as a candidate, including writable strings', () => {
-    // A writable string (`CollisionGroup`) and a serialised one (`BrickColor`) are indistinguishable
-    // by value, so both stay candidates and `setInstanceProperties` decides key by key, live.
+    // A writable string (`CollisionGroup`) and a serialised one (`MaterialVariant`) are
+    // indistinguishable by value, so both stay candidates and `setInstanceProperties` decides key by
+    // key, live. BrickColor is NOT a candidate: writing it would fight `Color` (measured live).
     const restorable = restorableProperties(liveBag);
     expect(restorable.CollisionGroup).toBe('Default');
     expect(restorable.MaterialVariant).toBe('');
-    expect(restorable.BrickColor).toBe('Medium stone grey');
+    expect(restorable.BrickColor).toBeUndefined();
     expect(restorable.Anchored).toBe(true);
     expect(restorable.Transparency).toBe(0);
   });
@@ -416,3 +420,146 @@ describe('gateway-shape detection (the HTTP end-to-end bug)', () => {
 });
 
 
+
+describe('reconstructValue - Enums', () => {
+  it('emits an Enum item as the Luau expression Studio actually accepts', async () => {
+    // MEASURED: the bag carries `Material: "Enum.Material.Plastic"`. Writing that back as a STRING
+    // fails with `Invalid value "Enum.Material.Plastic"`, so every enum property used to land in
+    // `skipped` on a restore — the value was recoverable, it was just quoted.
+    const mcp = rawGateway({ execute_luau: () => JSON.stringify({ applied: ['Material'], failed: [] }) });
+    await setInstanceProperties(mcp, 'Workspace.Part', { Material: 'Enum.Material.Plastic' });
+    const code = String(mcp.calls[0]?.args.code);
+    expect(code).toContain('attempt("Material", Enum.Material.Plastic)');
+    expect(code).not.toContain('"Enum.Material.Plastic"');
+  });
+
+  it('refuses to turn a non-identifier Enum-looking string into code', async () => {
+    const mcp = rawGateway({ execute_luau: () => JSON.stringify({ applied: [], failed: [] }) });
+    await setInstanceProperties(mcp, 'Workspace.Part', { Material: 'Enum.Material.Plastic; os.exit()' });
+    const code = String(mcp.calls[0]?.args.code);
+    // Quoted, i.e. a Luau string literal that the pcall rejects — never a bare expression.
+    expect(code).toContain('attempt("Material", "Enum.Material.Plastic; os.exit()")');
+  });
+});
+
+describe('captureInstanceTree / recreateInstance', () => {
+  const outline = (nodes: Array<{ path: string; className: string; name: string }>) =>
+    JSON.stringify({ nodes });
+
+  it('captures the subtree before the destroy, children under their parent', async () => {
+    const mcp = rawGateway({
+      execute_luau: () =>
+        outline([
+          { path: 'Workspace.Model', className: 'Model', name: 'Model' },
+          { path: 'Workspace.Model.Part', className: 'Part', name: 'Part' },
+          { path: 'Workspace.Model.Part.Decal', className: 'Decal', name: 'Decal' },
+        ]),
+      inspect_instance: (args) =>
+        JSON.stringify({
+          properties: { ClassName: 'Part', Material: 'Enum.Material.Plastic', Size: '4, 1.2, 2' },
+          name: String(args.path),
+        }),
+    });
+    const tree = await captureInstanceTree(mcp, 'Workspace.Model');
+    expect(tree).toMatchObject({ path: 'Workspace.Model', className: 'Model' });
+    expect(tree?.children.map((child) => child.path)).toEqual(['Workspace.Model.Part']);
+    expect(tree?.children[0].children.map((child) => child.path)).toEqual(['Workspace.Model.Part.Decal']);
+    expect(tree?.children[0].properties).toMatchObject({ Material: 'Enum.Material.Plastic' });
+  });
+
+  it('returns null when the path does not resolve, instead of an empty tree', async () => {
+    // An empty tree would restore as "nothing to do" and the delete would look undone.
+    const mcp = rawGateway({ execute_luau: () => 'error: not found' });
+    expect(await captureInstanceTree(mcp, 'Workspace.Gone')).toBeNull();
+  });
+
+  it('recreates parent first, then children, with real constructors', async () => {
+    const created: string[] = [];
+    const mcp = rawGateway({
+      execute_luau: (args) => {
+        const code = String(args.code);
+        const name = /inst\.Name = "(.*)"/.exec(code)?.[1] ?? '';
+        created.push(name);
+        return JSON.stringify({ ok: true, failed: [] });
+      },
+    });
+    const result = await recreateInstance(mcp, 'Workspace.Model', {
+      path: 'Workspace.Model',
+      className: 'Model',
+      name: 'Model',
+      properties: {},
+      children: [{
+        path: 'Workspace.Model.Part',
+        className: 'Part',
+        name: 'Part',
+        properties: { Material: 'Enum.Material.Plastic' },
+        children: [],
+      }],
+    });
+    expect(result.created).toEqual(['Workspace.Model', 'Workspace.Model.Part']);
+    expect(created).toEqual(['Model', 'Part']);
+  });
+
+  it('reports the properties Studio refused instead of failing the whole recreate', async () => {
+    const mcp = rawGateway({
+      execute_luau: () => JSON.stringify({ ok: true, failed: [{ key: 'Capabilities', reason: 'SecurityCapabilities expected' }] }),
+    });
+    const result = await recreateInstance(mcp, 'W.A', {
+      path: 'W.A', className: 'Part', name: 'A', properties: { Capabilities: '' }, children: [],
+    });
+    expect(result.created).toEqual(['W.A']);
+    expect(result.skipped).toEqual([{ path: 'W.A', key: 'Capabilities', reason: 'SecurityCapabilities expected' }]);
+  });
+
+  it('reports a refused class name instead of pretending the node came back', async () => {
+    const mcp = rawGateway({ execute_luau: () => 'error: cannot create Terrain' });
+    const result = await recreateInstance(mcp, 'W.T', {
+      path: 'W.T', className: 'Terrain', name: 'T', properties: {}, children: [],
+    });
+    expect(result.created).toEqual([]);
+    expect(result.skipped[0]).toMatchObject({ path: 'W.T', key: 'ClassName' });
+  });
+});
+
+describe('properties no restore can write', () => {
+  it('drops the capability-locked keys at capture time, so `skipped` only means real loss', async () => {
+    // MEASURED LIVE: every undo listed UniqueId, Capabilities and ExplorerIconContent, each refused
+    // in Studio's own words. Listing them every time teaches the user to ignore the report.
+    const restorable = restorableProperties({
+      UniqueId: 'u', Capabilities: '', ExplorerIconContent: '', RobloxLocked: false,
+      ClassName: 'Part', Parent: 'x', Material: 'Enum.Material.Plastic', Anchored: true,
+    });
+    expect(restorable).toEqual({ Material: 'Enum.Material.Plastic', Anchored: true });
+  });
+
+  it('retries a comma-triple as Color3 when Studio refuses it as a Vector3', async () => {
+    // `Color` and `Size` both arrive as "x, y, z"; emitting Vector3 for Color was refused live.
+    const mcp = rawGateway({ execute_luau: () => JSON.stringify({ applied: ['Color'], failed: [] }) });
+    await setInstanceProperties(mcp, 'Workspace.Part', { Color: '0.6, 0.6, 0.6' });
+    const code = String(mcp.calls[0]?.args.code);
+    expect(code).toContain('Vector3.new(0.6, 0.6, 0.6)');
+    expect(code).toContain('Color3.new(value.X, value.Y, value.Z)');
+  });
+});
+
+describe('reconstructValue - BrickColor is left out on purpose', () => {
+  it('never writes BrickColor, because it would override the exact Color', async () => {
+    // MEASURED LIVE: a part whose Color was 200,40,90 came back 205,84,75 — Neon's colour — because
+    // `BrickColor = "Neon"` was assigned after `Color` and won. Color round-trips exactly; the legacy
+    // mirror must not be written at all.
+    const bag = restorableProperties({ Color: '0.78, 0.16, 0.35', BrickColor: 'Neon', Material: 'Enum.Material.Neon' });
+    expect(bag.BrickColor).toBeUndefined();
+    const mcp = rawGateway({ execute_luau: () => JSON.stringify({ applied: [], failed: [] }) });
+    await setInstanceProperties(mcp, 'Workspace.Part', bag);
+    expect(String(mcp.calls[0]?.args.code)).not.toContain('BrickColor');
+  });
+
+  it('still leaves a plain string property a plain string', async () => {
+    const mcp = rawGateway({ execute_luau: () => JSON.stringify({ applied: [], failed: [] }) });
+    await setInstanceProperties(mcp, 'Workspace.Part', { CollisionGroup: 'Default', MaterialVariant: 'Wood Grain' });
+    const code = String(mcp.calls[0]?.args.code);
+    expect(code).toContain('attempt("CollisionGroup", "Default")');
+    expect(code).toContain('attempt("MaterialVariant", "Wood Grain")');
+    expect(code).not.toContain('BrickColor.new');
+  });
+});

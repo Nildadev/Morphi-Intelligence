@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isRestorable, snapshotPreState } from './snapshot';
+import { isRestorable, pathFromLuau, snapshotPreState } from './snapshot';
 import type { McpGateway } from '../tools/types';
 
 /**
@@ -170,5 +170,88 @@ describe('snapshotPreState', () => {
         expect(snapshot.inverse.map((step) => step.tool)).toEqual(['delete_instance', 'delete_instance']);
         expect(snapshot.notes).toEqual([]);
         expect(isRestorable(snapshot)).toBe(true);
+    });
+});
+
+describe('snapshotPreState - a delete becomes a recreate', () => {
+    /** Luau delete path: the server ships no delete tool, so a delete is `execute_luau` + Destroy. */
+    const luauGateway = (nodes: string, bag: Record<string, unknown> = {}) =>
+        gateway({
+            listTools: tools('execute_luau', 'inspect_instance'),
+            callTool: async (name: string) => {
+                if (name === 'inspect_instance') return JSON.stringify({ properties: { ...bag } });
+                return nodes;
+            },
+        });
+
+    it('captures the tree of an instance destroyed through execute_luau', async () => {
+        const snapshot = await snapshotPreState(
+            luauGateway(JSON.stringify({
+                nodes: [
+                    { path: 'Workspace.Model', className: 'Model', name: 'Model' },
+                    { path: 'Workspace.Model.Part', className: 'Part', name: 'Part' },
+                ],
+            })),
+            'studio.execute_luau',
+            { code: 'workspace.Model:Destroy()', path: 'Workspace.Model', datamodel_type: 'Edit' },
+        );
+        expect(snapshot.inverse).toHaveLength(1);
+        expect(snapshot.inverse[0]).toMatchObject({ tool: 'recreate_instance', path: 'Workspace.Model' });
+        expect(isRestorable(snapshot)).toBe(true);
+        const tree = (snapshot.inverse[0] as { tree: { children: Array<{ path: string }> } }).tree;
+        expect(tree.children.map((child) => child.path)).toEqual(['Workspace.Model.Part']);
+    });
+
+    it('leaves a non-deleting Luau as a property snapshot', async () => {
+        const snapshot = await snapshotPreState(
+            luauGateway('ok', { Transparency: 0 }),
+            'studio.execute_luau',
+            { code: 'workspace.Part.Transparency = 1', path: 'workspace.Part' },
+        );
+        expect(snapshot.inverse[0]).toMatchObject({ tool: 'set_properties' });
+    });
+
+    it('refuses to claim restorable when the tree cannot be read before the destroy', async () => {
+        // Nothing is left to read after the destroy, so a failed capture must be a hard "no".
+        const snapshot = await snapshotPreState(
+            gateway({
+                listTools: tools('execute_luau'),
+                callTool: async () => 'error: not found',
+            }),
+            'studio.delete_instance',
+            { path: 'Workspace.Gone' },
+        );
+        expect(snapshot.inverse).toEqual([]);
+        expect(snapshot.notes[0]).toContain('Workspace.Gone');
+        expect(isRestorable(snapshot)).toBe(false);
+    });
+});
+
+describe('pathFromLuau - the target of a delete has to come out of the code', () => {
+    it('reads the segment table our own Luau generates', () => {
+        expect(pathFromLuau('local segs = {"Workspace", "Model"}\nroot:Destroy()')).toBe('Workspace.Model');
+    });
+
+    it('reads a GetService / FindFirstChild chain', () => {
+        expect(pathFromLuau('game:GetService("ServerScriptService"):FindFirstChild("E2E"):Destroy()'))
+            .toBe('ServerScriptService.E2E');
+    });
+
+    it('reads a workspace dot path', () => {
+        expect(pathFromLuau('workspace.Model:Destroy()')).toBe('Workspace.Model');
+    });
+
+    it('answers null for a shape it cannot read, so nothing is restored by guesswork', () => {
+        expect(pathFromLuau('for _, v in ipairs(workspace:GetChildren()) do v:Destroy() end')).toBeNull();
+    });
+
+    it('leaves the turn non-restorable when a Luau delete names no readable path', async () => {
+        const snapshot = await snapshotPreState(
+            gateway({ listTools: tools('execute_luau'), callTool: async () => 'ok' }),
+            'studio.execute_luau',
+            { code: 'for _, v in ipairs(workspace:GetChildren()) do v:Destroy() end' },
+        );
+        expect(snapshot.inverse).toEqual([]);
+        expect(isRestorable(snapshot)).toBe(false);
     });
 });

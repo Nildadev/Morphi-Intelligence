@@ -336,7 +336,10 @@ describe.skipIf(!gated)('live Studio wire (MORPHI_LIVE_STUDIO=1)', () => {
     }
   }, 90000);
 
-  it('reconstructs Vector3/BrickColor from the lossy inspect string and restores them', async () => {
+  const tripleOf = (value: unknown): number[] =>
+    String(value ?? '').split(',').map((part) => Number(part.trim()));
+
+  it('reconstructs Vector3/Color from the lossy inspect string and restores them', async () => {
     const { gateway, live } = await liveGateway();
     const db = createTestDb();
     db.prepare('INSERT INTO projects (id, name, created_at, last_active) VALUES (?, ?, ?, ?)').run('p1', 'P', 1, 1);
@@ -350,28 +353,31 @@ describe.skipIf(!gated)('live Studio wire (MORPHI_LIVE_STUDIO=1)', () => {
       (await luau(`return game:GetService("Workspace"):FindFirstChild(${JSON.stringify(name)}) == nil and "missing" or "exists"`)).trim() === 'exists';
 
     try {
-      // 1. A Part with a Vector3 Size and a BrickColor set to a NAMED colour.
+      // 1. A Part with a Vector3 Size and an exact Color (BrickColor is the legacy mirror and is
+      // deliberately left out of the snapshot: writing it would override this exact colour).
       const created = await luau([
         'local part = Instance.new("Part")',
         `part.Name = ${JSON.stringify(name)}`,
         'part.Size = Vector3.new(4, 2, 1)',
-        'part.BrickColor = BrickColor.new("Bright red")',
+        'part.Color = Color3.new(1, 0.2, 0.1)',
         'part.Parent = game:GetService("Workspace")',
         'return "ok"',
       ].join('\n'));
       expect(created.trim()).toBe('ok');
 
-      // 2. The snapshot stores the lossy serialisation (Size as "4, 2, 1", BrickColor as "Bright red").
+      // 2. The snapshot stores the lossy serialisation (Size as "4, 2, 1", Color as a triple).
       const preState = await snapshotPreState(gateway, 'studio.set_property', { path });
       const entry = preState.entries.find((e) => e.kind === 'properties');
       expect(entry?.kind).toBe('properties');
       if (entry?.kind !== 'properties') return;
       expect(entry.properties.Size).toBe('4, 2, 1');
-      expect(entry.properties.BrickColor).toBe('Bright red');
+      // Float formatting is Studio's, so compare the numbers, not the text.
+      expect(tripleOf(entry.properties.Color)).toEqual([1, 0.2, 0.1]);
+      expect(entry.properties.BrickColor).toBeUndefined();
 
       const checkpoint = store.record({
         sessionId: 's1',
-        label: 'live vector/brickcolor edit',
+        label: 'live vector/color edit',
         manifest: {
           tool: 'studio.set_property',
           callId: 'live-vec-call',
@@ -389,24 +395,24 @@ describe.skipIf(!gated)('live Studio wire (MORPHI_LIVE_STUDIO=1)', () => {
         `local part = game:GetService("Workspace"):FindFirstChild(${JSON.stringify(name)})`,
         'if part == nil then return "error: not found" end',
         'part.Size = Vector3.new(8, 8, 8)',
-        'part.BrickColor = BrickColor.new("Bright blue")',
+        'part.Color = Color3.new(0.1, 0.2, 1)',
         'return "ok"',
       ].join('\n'));
       expect(mutated.trim()).toBe('ok');
       const dirty = await inspectInstance(gateway, path);
       expect(dirty?.Size).toBe('8, 8, 8');
-      expect(dirty?.BrickColor).toBe('Bright blue');
+      expect(tripleOf(dirty?.Color)).toEqual([0.1, 0.2, 1]);
 
-      // 4. Restore re-applies the reconstructed literals (Vector3.new / BrickColor.new).
+      // 4. Restore re-applies the reconstructed literals (Vector3.new / Color3 fallback).
       const restored = await applyRestore(gateway, store, checkpoint.id);
       expect(restored.ok).toBe(true);
       if (!restored.ok) return;
       expect(restored.result.status).toBe('restored');
 
-      // 5. Studio itself must hold the OLD Size and BrickColor again — the reconstruction worked.
+      // 5. Studio itself must hold the OLD Size and Color again — the reconstruction worked.
       const after = await inspectInstance(gateway, path);
       expect(after?.Size).toBe('4, 2, 1');
-      expect(after?.BrickColor).toBe('Bright red');
+      expect(tripleOf(after?.Color)).toEqual([1, 0.2, 0.1]);
       expect(store.get(checkpoint.id)?.status).toBe('restored');
     } finally {
       const cleaned = await deleteInstance(gateway, path).catch((error) => {

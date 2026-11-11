@@ -251,28 +251,67 @@ green):
   "permissionMode full runs an ask-risk tool without any approval request" in `chat.test.ts`.
 
 Value reconstruction from the lossy `inspect_instance` string is now handled where it is
-unambiguous: `reconstructValue` rebuilds `Vector3.new(x, y, z)` from a numeric triple and
-`BrickColor.new("Medium stone grey")` from a multi-word name, and leaves single-word strings
-(`CollisionGroup: "Default"`) as plain strings so a real string property is never turned into a
-BrickColor. `setInstanceProperties` still isolates every key in its own `pcall` and reports refusals.
+unambiguous, and MEASURED LIVE on `Place1` after learning it the hard way:
+
+- `"Enum.Material.Plastic"` is emitted as the Luau expression `Enum.Material.Plastic` (both halves
+  identifier-checked, so a crafted string cannot inject code). Quoting it was the whole reason every
+  enum property used to land in `skipped`.
+- A numeric triple becomes `Vector3.new(x, y, z)`, and the per-key `pcall` retries it as
+  `Color3.new(x, y, z)` when Studio refuses it. The triple is ambiguous BY VALUE — `Size` is a
+  Vector3, `Color` is a Color3, both serialise as `"x, y, z"` — and the first version lost the
+  colour of every restored part ("Color3 expected, got Vector3").
+- `BrickColor` is dropped at capture time instead of written: it is a legacy MIRROR of `Color`, and
+  assigning it after `Color` wins. A part recorded at `Color = 200,40,90` came back `205,84,75`
+  (Neon's own colour) because `BrickColor = "Neon"` ran last. `Color` round-trips exactly, so it is
+  the only source of truth.
+- Keys no restore can ever write are also dropped at capture (`UniqueId` — capability RobloxScript,
+  `Capabilities`/`ExplorerIconContent` — object types that serialise as `""`, `ClassName`,
+  `Parent`, `RobloxLocked`). Otherwise every undo listed them as `skipped`, which teaches the user
+  to ignore the list; now a `skipped` entry really means "this restore lost something".
+
+`setInstanceProperties` still isolates every key in its own `pcall` and reports refusals.
+
+### Undoing a DELETE — the instance is rebuilt, not just reported
+
+A delete used to make a whole turn non-restorable: there is nothing left to read afterwards. The
+snapshot now captures the subtree BEFORE the destroy and the inverse is a recreate.
+
+- **Recognising a delete**: a dedicated delete tool, or an `execute_luau` whose code contains
+  `:Destroy()` / `:Remove()` / `:ClearAllChildren()`. The real server ships no delete tool, so the
+  Luau form is the normal case.
+- **Finding the target**: a Luau delete carries no path in its args, so `pathFromLuau` reads it out of
+  the code — our own `local segs = {"Workspace", "Model"}` shape and a
+  `GetService(...)/FindFirstChild(...)` chain. Anything else (a loop over `GetChildren()`) returns
+  null and the checkpoint stays non-restorable: recreating the WRONG instance would destroy user work
+  twice over.
+- **What is stored** (`InstanceNode`): path, `ClassName`, `Name`, the restorable property bag and the
+  children in order, bounded to 200 nodes / depth 4. Beyond that the tree is dropped entirely rather
+  than stored half-way, because a partial tree recreates a mutilated instance and calls it restored.
+- **The recreate** runs parent first, one Luau call per node, so a single refused class costs that
+  node and is reported — never a silent success. `applyStep` then re-probes the root path, the same
+  anti-lie rule as scripts.
+- **Safety**: if anything occupies the path now, the undo stands down with a note instead of rebuilding
+  over live work; a FAILED existence probe is drift (refusal), because "cannot tell" is not "gone".
 
 ## Remaining gaps (documented, intentionally not done)
 
-- **Enum / `CFrame` rotation / `UniqueId` still surface as `skipped`** with Studio's own message.
-  `Vector3`/`Color3` triples and `BrickColor` names are now reconstructed, but `"Enum.Material.Plastic"`
-  would need a `Enum.Material.Plastic` literal and `CFrame.Rotation` is a pseudo-path that is not a
-  member at all — both stay refused-and-reported rather than guessed.
-- **Deleted-instance recreation** from children/properties is not attempted: an inserted instance's
-  inverse is a delete (reliable), not a recreate, so undoing an insert removes it rather than
-  rebuilding its subtree. Capturing children for recreation would need a separate snapshot shape.
+- **`CFrame` rotation** is still refused-and-reported: the bag only carries flattened pseudo-paths
+  (`CFrame.Position`, `PivotOffset.Rotation`) that are not members of the instance at all, so there is
+  no literal to emit without inventing a CFrame the snapshot never recorded.
+- **A recreate is shape-faithful, not byte-faithful**: class, name, tree and every writable property
+  come back (proved live: `Material`, `Anchored`, `Color`, `Size`, `Transparency` all exact), but
+  children of a refused class cannot be rebuilt, and a duplicate child name resolves to the first match
+  on the path the recreate uses.
 
 ## Verification gate (last green run)
 
-- `server tsc --noEmit` clean; `server vitest` **733 passed / 5 skipped** (5 skip = live probe).
+- `server tsc --noEmit` clean; `server vitest` **759 passed / 5 skipped** (5 skip = live probe).
 - `MORPHI_LIVE_STUDIO=1 npx vitest run src/harness/checkpoints/liveProbe.test.ts` → **5/5 passed**
   on real `Place1` (script restore snapshot→mutate→undo→read-back; property restore incl. string
   `CollisionGroup` + `skipped`; Vector3/BrickColor reconstruction restored and re-inspected).
-- `node scripts/e2e-live-undo.mjs` against the live server → **11/11 PASS** (see above).
+- `node scripts/e2e-live-undo.mjs` against the live server → **E2E OK, 27/27 PASS** — now three
+  scenarios: single call, batch (all-or-nothing), and a DELETE that the undo rebuilds from the
+  pre-state capture.
 - `client tsc --noEmit` clean; `client vitest` **631 passed**.
 - `Place1` verified CLEAN after every live run (no leftover probe scripts/instances).
 

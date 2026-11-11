@@ -29,6 +29,10 @@ export const FAKE_SCRIPTS = [
   // Batch-undo probe: TWO real `studio.multi_edit` calls on two DIFFERENT scripts in ONE turn, so
   // the turn-level undo can be proved to be all-or-nothing (one refused target ⇒ nothing written).
   'studio-batch-edit',
+  // Delete-undo probe: destroys a real instance through `execute_luau` (the server ships no delete
+  // tool), so the pre-state capture has to read the tree BEFORE the destroy and undo has to
+  // recreate it. Exercised against live Studio by `scripts/e2e-live-undo.mjs` scenario 3.
+  'studio-delete',
   // Design tour: one turn that calls every row shape the transcript can render (read, search,
   // command, edit, create, multi-edit, failure), so the whole log styling can be inspected in a
   // single screen without a Roblox Studio connection.
@@ -233,6 +237,30 @@ async function* fakeStream(request: LlmRequest, fallback: FakeScript, slowDelay:
       return;
     }
     yield { type: 'text_delta', text: 'Đã sửa hai script MorphiE2E và MorphiE2EB trong cùng một lượt.' };
+    yield { type: 'finish', reason: 'stop' };
+    return;
+  }
+
+  if (script === 'studio-delete') {
+    const path = 'Workspace.MorphiE2EModel';
+    const callId = 'fake_delete_1';
+    if (!answered.has(callId)) {
+      // Same shape our own `deleteInstance` emits, so `pathFromLuau` reads the target out of the code
+      // exactly as it would for a real model-written delete.
+      const code = 'local segs = {"Workspace", "MorphiE2EModel"}\n'
+        + 'local root = game:GetService(segs[1])\n'
+        + 'for i = 2, #segs do\n  if root == nil then break end\n  root = root:FindFirstChild(segs[i])\nend\n'
+        + 'if root == nil then return "error: not found" end\nroot:Destroy()\nreturn "ok"';
+      const args = { code, datamodel_type: 'Edit' };
+      yield { type: 'tool_call_start', callId, name: 'studio.execute_luau' };
+      if (signal.aborted) return;
+      yield { type: 'tool_call_delta', callId, argsDelta: JSON.stringify(args) };
+      if (signal.aborted) return;
+      yield { type: 'tool_call_end', callId, name: 'studio.execute_luau', args };
+      yield { type: 'finish', reason: 'tool_calls' };
+      return;
+    }
+    yield { type: 'text_delta', text: `Đã xoá ${path} trên place thật.` };
     yield { type: 'finish', reason: 'stop' };
     return;
   }

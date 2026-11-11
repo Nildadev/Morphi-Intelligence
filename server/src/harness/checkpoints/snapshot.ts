@@ -1,5 +1,6 @@
 import type { McpGateway } from '../tools/types';
 import {
+  captureInstanceTree,
   inspectInstance,
   readScriptSource,
   restorableProperties,
@@ -72,6 +73,19 @@ const SCRIPT_WRITE_TOOLS = [
 ] as const;
 /** Tool names whose inverse is "delete what was inserted". */
 const INSERT_TOOLS = ['studio.insert_asset', 'studio.insert_instance', 'insert_asset', 'insert_instance'] as const;
+/** Tool names that destroy an instance — the inverse is a recreate from the captured tree. */
+const DELETE_TOOLS = ['studio.delete_instance', 'studio.remove_instance', 'delete_instance', 'remove_instance'] as const;
+
+/**
+ * Luau that deletes, recognised inside an arbitrary `execute_luau` call.
+ *
+ * A delete through `execute_luau` is the normal case on the real server (it ships no delete tool),
+ * so ignoring it would leave every such turn silently non-restorable. The match is deliberately
+ * narrow — the destroying call itself — and the path is still read from the args, so a code block
+ * that happens to contain `Destroy()` on something else is captured (harmlessly) rather than
+ * missed: a wrong capture costs one extra read, a missed one costs the user's instance.
+ */
+const DELETE_CODE = /\:(?:Destroy|Remove)\s*\(|:ClearAllChildren\s*\(/;
 
 const PATH_KEYS = ['path', 'file_path', 'script', 'target', 'target_file', 'targetPath', 'scriptPath', 'instancePath', 'filename', 'assetId'] as const;
 
@@ -141,6 +155,7 @@ export async function snapshotPreState(
 
   const isScriptWrite = (SCRIPT_WRITE_TOOLS as readonly string[]).includes(toolName);
   const isInsert = (INSERT_TOOLS as readonly string[]).includes(toolName);
+  const isDelete = (DELETE_TOOLS as readonly string[]).includes(toolName) || declaresDelete(toolName, args);
 
   if (isScriptWrite) {
     const paths = scriptPathsOf(args);
@@ -174,6 +189,22 @@ export async function snapshotPreState(
       entries.push({ kind: 'inserted', path });
       inverse.push({ tool: 'delete_instance', path });
     }
+  } else if (isDelete) {
+    // Capture BEFORE the destroy runs: afterwards there is nothing left to read, which is why a
+    // deleted instance used to make the whole turn non-restorable. A delete through Luau carries no
+    // path in its args, so it is read out of the code (see `pathFromLuau`).
+    const path = pathOf(args) ?? pathFromLuau(codeOf(args) ?? '');
+    if (path === null) {
+      notes.push('Không đọc được đường dẫn đối tượng bị xoá từ tham số của công cụ.');
+    } else {
+      const tree = await captureInstanceTree(mcp, path, signal);
+      if (tree === null) {
+        notes.push(`Không đọc được cấu trúc của ${path} trước khi xoá — không tạo lại được.`);
+      } else {
+        entries.push({ kind: 'deleted', path, tree });
+        inverse.push({ tool: 'recreate_instance', path, tree });
+      }
+    }
   } else {
     // Property writes and arbitrary Luau: snapshot the property bag when the path is known, so the
     // restore engine can at least attempt to re-apply it (verified by re-inspect afterwards).
@@ -202,6 +233,13 @@ export async function snapshotPreState(
   return { entries, inverse, notes };
 }
 
+/** The Luau source, when the tool takes one. */
+function codeOf(args: unknown): string | null {
+  if (args === null || typeof args !== 'object') return null;
+  const code = (args as Record<string, unknown>).code;
+  return typeof code === 'string' ? code : null;
+}
+
 /**
  * Does this call CREATE a script (so its inverse is a delete) rather than EDIT one (inverse = rewrite)?
  * Decided from the ARGS, not from whether the read found anything: a dedicated create tool always
@@ -218,6 +256,57 @@ function declaresCreate(toolName: string, args: unknown): boolean {
   const edits = Array.isArray(record.edits) ? (record.edits as Array<{ old_string?: string }>) : [];
   const first = edits[0];
   return first !== undefined && (first.old_string ?? '') === '';
+}
+
+/**
+ * Does this call DESTROY an instance? A dedicated delete tool always does; for arbitrary Luau the
+ * code itself has to name a destroying call (see DELETE_CODE). `ClearAllChildren` counts: it wipes
+ * the subtree the restore would recreate.
+ */
+function declaresDelete(toolName: string, args: unknown): boolean {
+  if (args === null || typeof args !== 'object') return false;
+  const code = (args as Record<string, unknown>).code;
+  if (typeof code !== 'string') return false;
+  if (toolName !== 'execute_luau' && toolName !== 'studio.execute_luau') return false;
+  return DELETE_CODE.test(code);
+}
+
+/**
+ * The instance path a deleting `execute_luau` targets, when the code names it in a shape we can read.
+ *
+ * The real server ships no delete tool, so a delete IS a Luau call and the arguments carry no path —
+ * the path only exists inside the code. Only the two shapes our own code and the model reliably emit
+ * are recognised:
+ *   - a segment table (`local segs = {"Workspace", "Model"}`) — what `resolveLuau` generates;
+ *   - a `GetService(...)/FindFirstChild(...)` chain, with optional `workspace`/`game` prefixes.
+ * Anything else returns null, which makes the checkpoint non-restorable rather than restoring the
+ * WRONG instance — guessing here would destroy user work twice over.
+ */
+export function pathFromLuau(code: string): string | null {
+  const table = /local segs = \{(.*?)\}/s.exec(code);
+  if (table !== null) {
+    const segments = [...table[1].matchAll(/"((?:[^"\\]|\\.)*)"/g)]
+      .map((match) => {
+        try {
+          return JSON.parse(`"${match[1]}"`) as string;
+        } catch {
+          return null;
+        }
+      })
+      .filter((segment): segment is string => segment !== null && segment !== '');
+    if (segments.length > 0) return segments.join('.');
+  }
+
+  const chain = /(?:game\s*\.\s*)?(?:GetService\s*\(\s*"([A-Za-z]+)"\s*\)|(workspace|Workspace|game\s*\.\s*Workspace))((?:\s*[:.]\s*FindFirstChild\s*\(\s*"[^"\\]*"\s*\)|\s*\[\s*"[^"\\]*"\s*\]|\s*\.\s*[A-Za-z_]\w*)*)/.exec(code);
+  if (chain === null) return null;
+  const root = chain[1] ?? 'Workspace';
+  const rest = [...(chain[3] ?? '').matchAll(/FindFirstChild\s*\(\s*"([^"\\]*)"\s*\)|\[\s*"([^"\\]*)"\s*\]|\.\s*([A-Za-z_]\w*)/g)]
+    .map((match) => match[1] ?? match[2] ?? match[3])
+    .filter((segment): segment is string => typeof segment === 'string' && segment !== '');
+  // No trailing segment means the code destroyed a SERVICE or enumerated its children
+  // (`workspace:GetChildren()` + Destroy) — neither is a subtree we may recreate.
+  if (rest.length === 0) return null;
+  return [root, ...rest].join('.');
 }
 
 /** A snapshot is restorable only when every touched target produced an inverse step. */
@@ -238,7 +327,9 @@ export async function snapshotPostState(
   const entries: PostStateEntry[] = [];
   const notes: string[] = [];
   for (const entry of pre.entries) {
-    if (entry.kind === 'inserted') continue;
+    // Nothing to re-read: an inserted target is gone by design of its inverse, and a deleted one is
+    // already absent — probing it would only add a false "could not read" note.
+    if (entry.kind === 'inserted' || entry.kind === 'deleted') continue;
     if (entry.kind === 'script') {
       const source = await readScriptSource(mcp, entry.path, signal);
       if (source === null) {

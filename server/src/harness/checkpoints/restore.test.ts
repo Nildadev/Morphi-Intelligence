@@ -390,3 +390,103 @@ describe('restoreTurn - the Undo button on the script summary', () => {
         expect(gateway.writes).toEqual([{ tool: 'studio.write_script', args: { path: 'A', source: 'old-a' } }]);
     });
 });
+
+describe('restore of a DELETED instance', () => {
+    const tree = {
+        path: 'Workspace.Model',
+        className: 'Model',
+        name: 'Model',
+        properties: {},
+        children: [{
+            path: 'Workspace.Model.Part',
+            className: 'Part',
+            name: 'Part',
+            properties: { Material: 'Enum.Material.Plastic' },
+            children: [],
+        }],
+    };
+    const deletedSnapshot = (): PreStateSnapshot => ({
+        entries: [{ kind: 'deleted', path: 'Workspace.Model', tree }],
+        inverse: [{ tool: 'recreate_instance', path: 'Workspace.Model', tree }],
+        notes: [],
+    });
+
+    /** Luau answers: `missing`/`exists` for the existence probe, a JSON report otherwise. */
+    function luauGateway(options: { exists?: boolean; probeFails?: boolean } = {}) {
+        const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+        // The probe must answer for the world AFTER the call under test, so a create flips it.
+        let exists = options.exists ?? false;
+        const gateway: McpGateway & { calls: typeof calls } = {
+            connected: true,
+            studioLinked: true,
+            server: { source: 'studio-builtin', path: 'C:/mcp.exe', version: '1' },
+            studio: { id: 'place', name: 'P' },
+            toolCount: 1,
+            lastError: null,
+            calls,
+            listTools: async () => [{ name: 'execute_luau', description: 'luau', parameters: { type: 'object' } }],
+            callTool: async (name, args) => {
+                const record = (args ?? {}) as Record<string, unknown>;
+                calls.push({ tool: name, args: record });
+                const code = String(record.code ?? '');
+                if (code.includes('"exists"')) {
+                    if (options.probeFails === true) return 'error: cannot probe';
+                    return exists ? 'exists' : 'missing';
+                }
+                if (code.includes('Instance.new')) exists = true;
+                return JSON.stringify({ ok: true, failed: [] });
+            },
+            reconnect: async () => undefined,
+            close: async () => undefined,
+        };
+        return gateway;
+    }
+
+    it('previews the recreate when the instance really is gone', async () => {
+        const store = new CheckpointStore(db());
+        const checkpoint = record(store, deletedSnapshot(), true);
+        const preview = await previewRestore(luauGateway(), store, checkpoint.id);
+        expect(preview.ok).toBe(true);
+        if (!preview.ok) return;
+        expect(preview.preview.clean).toBe(true);
+        expect(preview.preview.steps[0]).toMatchObject({ action: 'recreate-deleted', path: 'Workspace.Model' });
+    });
+
+    it('never recreates over something that occupies the path now', async () => {
+        // Overwriting live work is the one thing the plan forbids, so the undo stands down.
+        const store = new CheckpointStore(db());
+        const checkpoint = record(store, deletedSnapshot(), true);
+        const preview = await previewRestore(luauGateway({ exists: true }), store, checkpoint.id);
+        expect(preview.ok).toBe(true);
+        if (!preview.ok) return;
+        expect(preview.preview.notes.join(' ')).toContain('đang tồn tại');
+    });
+
+    it('treats a failed existence probe as drift, never as "gone"', async () => {
+        const store = new CheckpointStore(db());
+        const checkpoint = record(store, deletedSnapshot(), true);
+        const preview = await previewRestore(luauGateway({ probeFails: true }), store, checkpoint.id);
+        expect(preview.ok).toBe(true);
+        if (!preview.ok) return;
+        expect(preview.preview.clean).toBe(false);
+    });
+
+    it('recreates the subtree and marks the checkpoint restored', async () => {
+        const store = new CheckpointStore(db());
+        const checkpoint = record(store, deletedSnapshot(), true);
+        const gateway = luauGateway({ exists: false });
+        const restored = await applyRestore(gateway, store, checkpoint.id);
+        expect(restored.ok).toBe(true);
+        if (!restored.ok) return;
+        expect(restored.result).toMatchObject({ status: 'restored', applied: 1 });
+        const created = gateway.calls
+            .map((call) => String(call.args.code ?? ''))
+            .filter((code) => code.includes('Instance.new'));
+        expect(created).toHaveLength(2);
+        expect(created[0]).toContain('pcall(Instance.new, "Model")');
+        expect(created[1]).toContain('pcall(Instance.new, "Part")');
+        // Parent first: the child can only be parented once its parent exists.
+        expect(created[1]).toContain('{"Workspace", "Model"}');
+        expect(store.get(checkpoint.id)?.status).toBe('restored');
+    });
+});

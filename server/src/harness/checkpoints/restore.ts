@@ -4,11 +4,14 @@ import { isRestorable, type PostStateEntry, type PostStateSnapshot, type PreStat
 import {
   deleteInstance,
   inspectInstance,
+  instanceExists,
   readScriptSource,
+  recreateInstance,
   setInstanceProperties,
   writeScriptSource,
   type InverseStep,
   type PropertyWriteResult,
+  type RecreateResult,
 } from './studioWire';
 
 /**
@@ -36,7 +39,7 @@ export type RestoreRefusal =
 
 export interface RestoreStepPlan {
   path: string;
-  action: 'restore-script' | 'restore-properties' | 'delete-inserted';
+  action: 'restore-script' | 'restore-properties' | 'delete-inserted' | 'recreate-deleted';
   /** What the user will see change, in one line. */
   summary: string;
 }
@@ -83,6 +86,9 @@ function planOf(snapshot: PreStateSnapshot): RestoreStepPlan[] {
     }
     if (step.tool === 'delete_instance') {
       return { path: step.path, action: 'delete-inserted' as const, summary: `Xoá ${step.path} (được tạo bởi lượt này)` };
+    }
+    if (step.tool === 'recreate_instance') {
+      return { path: step.path, action: 'recreate-deleted' as const, summary: `Tạo lại ${step.path} (bị lượt này xoá)` };
     }
     return { path: step.path, action: 'restore-properties' as const, summary: `Khôi phục thuộc tính của ${step.path}` };
   });
@@ -148,6 +154,22 @@ async function detectDrift(
         // would overwrite a hand edit, so the plan refuses.
         if (strict) drift.push(`${entry.path} đã đổi thuộc tính (${changed.join(', ')}) kể từ bản sao.`);
         else notes.push(`${entry.path} có thuộc tính khác bản sao (${changed.join(', ')}).`);
+      }
+      continue;
+    }
+    if (entry.kind === 'deleted') {
+      // The turn deleted this instance. "Nothing to do" and "do not touch it" are the same answer
+      // here: if anything occupies the path now, recreating over it would overwrite live work, so
+      // the undo stands down and says why instead of guessing what the path holds.
+      const exists = await instanceExists(mcp, entry.path, signal);
+      if (exists === null) {
+        // A failed probe is NOT "gone": recreating on that assumption is exactly the overwrite the
+        // plan forbids, so this refuses in both modes rather than degrade to a note.
+        drift.push(`${entry.path} không kiểm tra được — không xác nhận được là đã bị xoá.`);
+        continue;
+      }
+      if (exists) {
+        notes.push(`${entry.path} đang tồn tại — không tạo lại để tránh ghi đè.`);
       }
       continue;
     }
@@ -299,6 +321,20 @@ async function applyStep(
     } catch (error) {
       return error instanceof Error ? error.message : 'Studio không mở công cụ xoá để khôi phục.';
     }
+  }
+  if (step.tool === 'recreate_instance') {
+    let recreated: RecreateResult;
+    try {
+      recreated = await recreateInstance(mcp, step.path, step.tree, signal);
+    } catch (error) {
+      return error instanceof Error ? error.message : 'Studio không mở công cụ Luau để tạo lại.';
+    }
+    for (const entry of recreated.skipped) skipped.push({ path: entry.path, key: entry.key, reason: entry.reason });
+    // Same anti-lie rule as the other steps: the root must actually be there afterwards.
+    if (!recreated.created.includes(step.path)) return 'Không tạo lại được đối tượng gốc.';
+    const exists = await instanceExists(mcp, step.path, signal);
+    if (exists === null) return 'Đã tạo lại nhưng không đọc lại được để xác nhận.';
+    return exists ? null : 'Đã tạo lại nhưng đối tượng không còn ở đó.';
   }
   let written: PropertyWriteResult;
   try {
