@@ -318,11 +318,11 @@ describe.skipIf(!gated)('live Studio wire (MORPHI_LIVE_STUDIO=1)', () => {
       expect(after?.Anchored).toBe(true);
       expect(after?.CollisionGroup).toBe('Default');
 
-      // 7. The lossy keys were refused per-key, in Studio's own words, and that did NOT fail the
-      // restore: `UniqueId` is capability-locked on every Instance.
-      expect(restored.result.skipped.length).toBeGreaterThan(0);
-      for (const skip of restored.result.skipped) expect(skip.reason.length).toBeGreaterThan(0);
-      expect(restored.result.skipped.some((skip) => skip.key === 'UniqueId')).toBe(true);
+      // 7. The keys no build can write are dropped at CAPTURE, so a clean restore reports NO skips.
+      // Measured live before that: every undo listed UniqueId/Capabilities/ExplorerIconContent as
+      // "skipped", which makes the report noise the user learns to ignore.
+      expect(preState.entries[0]?.kind === 'properties' && preState.entries[0].properties.UniqueId).toBeUndefined();
+      expect(restored.result.skipped).toEqual([]);
       expect(store.get(checkpoint.id)?.status).toBe('restored');
     } finally {
       const cleaned = await deleteInstance(gateway, path).catch((error) => {
@@ -338,6 +338,13 @@ describe.skipIf(!gated)('live Studio wire (MORPHI_LIVE_STUDIO=1)', () => {
 
   const tripleOf = (value: unknown): number[] =>
     String(value ?? '').split(',').map((part) => Number(part.trim()));
+  /** Studio serialises floats at float32 precision, so an exact equality would fail on 0.2. */
+  const expectTriple = (value: unknown, expected: number[]): void => {
+    const actual = tripleOf(value);
+    expect(actual).toHaveLength(expected.length);
+    // Roblox quantises Color3 to 8-bit, so 0.1 comes back as 25/255 = 0.0980392.
+    expected.forEach((want, index) => expect(actual[index]).toBeCloseTo(want, 2));
+  };
 
   it('reconstructs Vector3/Color from the lossy inspect string and restores them', async () => {
     const { gateway, live } = await liveGateway();
@@ -372,7 +379,7 @@ describe.skipIf(!gated)('live Studio wire (MORPHI_LIVE_STUDIO=1)', () => {
       if (entry?.kind !== 'properties') return;
       expect(entry.properties.Size).toBe('4, 2, 1');
       // Float formatting is Studio's, so compare the numbers, not the text.
-      expect(tripleOf(entry.properties.Color)).toEqual([1, 0.2, 0.1]);
+      expectTriple(entry.properties.Color, [1, 0.2, 0.1]);
       expect(entry.properties.BrickColor).toBeUndefined();
 
       const checkpoint = store.record({
@@ -401,7 +408,7 @@ describe.skipIf(!gated)('live Studio wire (MORPHI_LIVE_STUDIO=1)', () => {
       expect(mutated.trim()).toBe('ok');
       const dirty = await inspectInstance(gateway, path);
       expect(dirty?.Size).toBe('8, 8, 8');
-      expect(tripleOf(dirty?.Color)).toEqual([0.1, 0.2, 1]);
+      expectTriple(dirty?.Color, [0.1, 0.2, 1]);
 
       // 4. Restore re-applies the reconstructed literals (Vector3.new / Color3 fallback).
       const restored = await applyRestore(gateway, store, checkpoint.id);
@@ -412,7 +419,7 @@ describe.skipIf(!gated)('live Studio wire (MORPHI_LIVE_STUDIO=1)', () => {
       // 5. Studio itself must hold the OLD Size and Color again — the reconstruction worked.
       const after = await inspectInstance(gateway, path);
       expect(after?.Size).toBe('4, 2, 1');
-      expect(tripleOf(after?.Color)).toEqual([1, 0.2, 0.1]);
+      expectTriple(after?.Color, [1, 0.2, 0.1]);
       expect(store.get(checkpoint.id)?.status).toBe('restored');
     } finally {
       const cleaned = await deleteInstance(gateway, path).catch((error) => {
