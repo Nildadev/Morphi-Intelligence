@@ -12,8 +12,10 @@ class Bridge implements McpBridge {
   };
   close = vi.fn(async () => { this.connected = false; this.studioLinked = false; });
   connect = vi.fn(async () => { this.connected = true; });
-  listTools = vi.fn(async () => ({ tools: [] }));
-  callTool = vi.fn(async () => ({ content: [] }));
+  // Typed from the interface, not inferred from the empty stub: an inferred `Promise<{tools: never[]}>`
+  // makes every richer return a type error, which is how this test drifted out of the type check.
+  listTools: McpBridge['listTools'] = vi.fn(async () => ({ tools: [] }));
+  callTool: McpBridge['callTool'] = vi.fn(async () => ({ content: [] }));
 }
 
 describe('Task 31 gateway lifecycle', () => {

@@ -63,9 +63,15 @@ const NO_MCP: ToolRunContext['mcp'] = {
   connected: false,
   studioLinked: false,
   server: { source: 'none', path: null, version: null },
+
+  studio: null,
+  toolCount: 0,
+  lastError: null,
   listTools: async () => [],
   callTool: async () => null,
   reconnect: async () => undefined,
+  // Task 31 shutdown contract: the test stub has nothing to release.
+  close: async () => undefined,
 };
 
 function runContext(emit: Emit, signal: AbortSignal = new AbortController().signal, sessionId = 's1'): ToolRunContext {

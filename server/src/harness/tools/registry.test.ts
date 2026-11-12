@@ -28,6 +28,11 @@ class StubGateway implements McpGateway {
     path: null,
     version: '1.8.0',
   };
+  // Task 31C added the live-place triple to the interface: a gateway that cannot say which place it is
+  // talking to is exactly the case the status payload must not invent.
+  readonly studio: { id: string; name: string | null } | null = null;
+  readonly toolCount = 0;
+  readonly lastError: { code: string; message: string } | null = null;
   tools: ToolSchema[] = [];
   failList = false;
   calls: { name: string; args: unknown; signal?: AbortSignal }[] = [];

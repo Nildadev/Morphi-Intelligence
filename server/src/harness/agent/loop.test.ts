@@ -5,6 +5,7 @@ import { createEmit } from '../events/emit';
 import { EventStore } from '../events/store';
 import type { AgentStatus, LiveEvent } from '../shared/types';
 import { effectiveWindow, toolOutputBudgetChars } from '../shared/window';
+import { eventOfType } from '../events/types';
 import type { Emit, EventPayloadMap, EventType, SessionEvent } from '../events/types';
 import type { LlmRequest, ModelInfo, ProviderAdapter, StreamEvent } from '../llm/types';
 import { LlmRegistry } from '../llm/registry';
@@ -39,9 +40,13 @@ const NO_MCP: McpGateway = {
   connected: false,
   studioLinked: false,
   server: { source: 'none', path: null, version: null },
+  studio: null,
+  toolCount: 0,
+  lastError: null,
   listTools: async () => [],
   callTool: async () => null,
   reconnect: async () => undefined,
+  close: async () => undefined,
 };
 
 const text = (value: string): StreamEvent => ({ type: 'text_delta', text: value });
@@ -228,7 +233,9 @@ async function fixture(options: FixtureOptions = {}): Promise<Fixture> {
     types: () => rows().map((row) => row.type),
     payloads: <K extends EventType>(type: K) =>
       rows().filter((row) => row.type === type).map((row) => row.payload as EventPayloadMap[K]),
-    turnId: () => rows()[0].payload.turnId as string,
+    // `turn/start` carries the id; narrowing first is what makes the read honest instead of a cast
+    // over the whole payload union.
+    turnId: () => (eventOfType(rows(), 'turn/start')?.payload.turnId ?? '') as string,
     turn: (overrides: Partial<AgentTurnInput> = {}, signal?: AbortSignal) =>
       loop.runTurn(
         {
@@ -512,9 +519,10 @@ describe('AgentLoop tool turn', () => {
 
     const budget = toolOutputBudgetChars(effectiveWindow(8_000));
     const toolMessage = f.adapter.requests[1].messages.at(-1);
-    expect(toolMessage.role).toBe('tool');
-    expect((toolMessage.content ?? '').length).toBeLessThanOrEqual(budget + 200);
-    expect(toolMessage.content).toContain('đã cắt bớt');
+    expect(toolMessage, 'the request must end with the tool result').toBeDefined();
+    expect(toolMessage!.role).toBe('tool');
+    expect((toolMessage!.content ?? '').length).toBeLessThanOrEqual(budget + 200);
+    expect(toolMessage!.content).toContain('đã cắt bớt');
   });
 
   it('leaves the same result intact when the model window is large', async () => {
@@ -530,8 +538,9 @@ describe('AgentLoop tool turn', () => {
     await expect(f.turn()).resolves.toMatchObject({ status: 'completed' });
 
     const toolMessage = f.adapter.requests[1].messages.at(-1);
-    expect(toolMessage.content).not.toContain('đã cắt bớt');
-    expect((toolMessage.content ?? '').length).toBeGreaterThan(19_000);
+    expect(toolMessage, 'the request must end with the tool result').toBeDefined();
+    expect(toolMessage!.content).not.toContain('đã cắt bớt');
+    expect((toolMessage!.content ?? '').length).toBeGreaterThan(19_000);
   });
 
   it('runs a multi-call step as one batch and replays both results to the provider', async () => {

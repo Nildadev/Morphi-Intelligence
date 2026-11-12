@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { OpenAICompatibleAdapter } from './openaiCompatible';
+import type { ToolSchema } from './types';
+
+/**
+ * Replace `fetch` with a stub. A stub implements only the fields the adapter reads (`ok`, `status`,
+ * `json`, `text`, `body`), which is not the whole `Response` contract, so it is cast here ONCE. The
+ * sixteen `@ts-expect-error stub` directives this replaces had gone stale: most of them no longer
+ * suppressed anything, and an unused directive hides the next real error on the same line.
+ */
+function stubFetch(stub: unknown): typeof fetch {
+  return stub as unknown as typeof fetch;
+}
 import type { LlmRequest } from './types';
 
 function request(overrides: Partial<LlmRequest> = {}): LlmRequest {
@@ -19,8 +30,7 @@ describe('OpenAICompatibleAdapter output cap', () => {
     const adapter = new OpenAICompatibleAdapter({ id: 'openrouter', name: 'OpenRouter', baseUrl: 'https://example.test' });
     let body: Record<string, unknown> = {};
     const original = globalThis.fetch;
-    // @ts-expect-error stub
-    globalThis.fetch = async (_url: string, init: { body?: string }) => {
+    globalThis.fetch = stubFetch(async (_url: string, init: { body?: string }) => {
       body = JSON.parse(init.body ?? '{}') as Record<string, unknown>;
       return {
         ok: true,
@@ -31,7 +41,7 @@ describe('OpenAICompatibleAdapter output cap', () => {
           },
         }),
       } as unknown as Response;
-    };
+    });
     try {
       for await (const event of adapter.stream(request())) {
         void event;
@@ -46,8 +56,7 @@ describe('OpenAICompatibleAdapter output cap', () => {
     const adapter = new OpenAICompatibleAdapter({ id: 'openrouter', name: 'OpenRouter', baseUrl: 'https://example.test' });
     let body: Record<string, unknown> = {};
     const original = globalThis.fetch;
-    // @ts-expect-error stub
-    globalThis.fetch = async (_url: string, init: { body?: string }) => {
+    globalThis.fetch = stubFetch(async (_url: string, init: { body?: string }) => {
       body = JSON.parse(init.body ?? '{}') as Record<string, unknown>;
       return {
         ok: true,
@@ -58,7 +67,7 @@ describe('OpenAICompatibleAdapter output cap', () => {
           },
         }),
       } as unknown as Response;
-    };
+    });
     try {
       for await (const event of adapter.stream(request({ maxTokens: 4096 }))) {
         void event;
@@ -74,8 +83,7 @@ describe('OpenAICompatibleAdapter listModels', () => {
   it('reads reasoning efforts from the declared supported_efforts and never guesses by name', async () => {
     const adapter = new OpenAICompatibleAdapter({ id: 'openrouter', name: 'OpenRouter', baseUrl: 'https://example.test' });
     const original = globalThis.fetch;
-    // @ts-expect-error stub
-    globalThis.fetch = async () => ({
+    globalThis.fetch = stubFetch(async () => ({
       ok: true,
       json: async () => ({
         data: [
@@ -109,7 +117,7 @@ describe('OpenAICompatibleAdapter listModels', () => {
           },
         ],
       }),
-    }) as unknown as Response;
+    }) as unknown as Response);
     try {
       const models = await adapter.listModels();
       expect(models.map((model) => model.id)).toEqual(['some/reasoner', 'some/top-level', 'gpt-5-legacy']);
@@ -126,8 +134,7 @@ describe('OpenAICompatibleAdapter listModels', () => {
   it('keeps only text-output models when the catalogue stays silent on modalities', async () => {
     const adapter = new OpenAICompatibleAdapter({ id: 'openrouter', name: 'OpenRouter', baseUrl: 'https://example.test' });
     const original = globalThis.fetch;
-    // @ts-expect-error stub
-    globalThis.fetch = async () => ({
+    globalThis.fetch = stubFetch(async () => ({
       ok: true,
       json: async () => ({
         data: [
@@ -139,7 +146,7 @@ describe('OpenAICompatibleAdapter listModels', () => {
           { id: 'cohere/rerank-v3' },
         ],
       }),
-    }) as unknown as Response;
+    }) as unknown as Response);
     try {
       const models = await adapter.listModels();
       expect(models.map((model) => model.id)).toEqual(['some/chat']);
@@ -162,13 +169,12 @@ describe('OpenAICompatibleAdapter catalog-backed providers', () => {
   it('offers the live cards with the metadata the wire never sends', async () => {
     const adapter = new OpenAICompatibleAdapter({ id: 'nvidia', name: 'NVIDIA NIM', baseUrl: 'https://example.test' });
     const original = globalThis.fetch;
-    // @ts-expect-error stub
-    globalThis.fetch = async () => nimStub([
+    globalThis.fetch = stubFetch(async () => nimStub([
       'deepseek-ai/deepseek-v4.1-flash',
       'google/gemma-3-12b-it',
       'nvidia/embed-qa-4',       // embedder: no card, never a chat model
       'nvidia/llama-3.1-nemoguard-8b-topic-control',
-    ]) as unknown as Response;
+    ]) as unknown as Response);
     try {
       const models = await adapter.listModels();
       expect(models.map((model) => model.id)).toEqual(['deepseek-ai/deepseek-v4.1-flash', 'google/gemma-3-12b-it']);
@@ -192,8 +198,7 @@ describe('OpenAICompatibleAdapter catalog-backed providers', () => {
   it('stands on the whole catalogue when the gateway renames its models', async () => {
     const adapter = new OpenAICompatibleAdapter({ id: 'kilo', name: 'Kilo Gateway', baseUrl: 'https://example.test' });
     const original = globalThis.fetch;
-    // @ts-expect-error stub
-    globalThis.fetch = async () => ({ ok: true, json: async () => ({ data: [{ id: 'kilo/x-ai/grok-4.3' }] }) }) as unknown as Response;
+    globalThis.fetch = stubFetch(async () => ({ ok: true, json: async () => ({ data: [{ id: 'kilo/x-ai/grok-4.3' }] }) }) as unknown as Response);
     try {
       const models = await adapter.listModels();
       // A shared id does not exist, so an intersection would empty the picker for a key that just
@@ -211,11 +216,10 @@ describe('OpenAICompatibleAdapter catalog-backed providers', () => {
     // is the richest of them all, so the wire path must survive a provider with no cards.
     const adapter = new OpenAICompatibleAdapter({ id: 'openrouter', name: 'OpenRouter', baseUrl: 'https://example.test' });
     const original = globalThis.fetch;
-    // @ts-expect-error stub
-    globalThis.fetch = async () => ({
+    globalThis.fetch = stubFetch(async () => ({
       ok: true,
       json: async () => ({ data: [{ id: 'gpt-4o-mini', context_length: 128_000 }] }),
-    }) as unknown as Response;
+    }) as unknown as Response);
     try {
       const models = await adapter.listModels();
       expect(models).toHaveLength(1);
@@ -235,11 +239,10 @@ describe('OpenAICompatibleAdapter catalog-enriched providers', () => {
   it('fills context, efforts and the display name from the card', async () => {
     const adapter = new OpenAICompatibleAdapter({ id: 'openai', name: 'OpenAI', baseUrl: 'https://example.test' });
     const original = globalThis.fetch;
-    // @ts-expect-error stub — OpenAI's real listing: id only, no metadata anywhere.
-    globalThis.fetch = async () => ({
+    globalThis.fetch = stubFetch(async () => ({
       ok: true,
       json: async () => ({ data: [{ id: 'gpt-5.1' }, { id: 'gpt-4o-mini' }] }),
-    }) as unknown as Response;
+    }) as unknown as Response);
     try {
       const models = await adapter.listModels();
       expect(models.map((model) => model.id)).toEqual(['gpt-5.1', 'gpt-4o-mini']);
@@ -260,8 +263,7 @@ describe('OpenAICompatibleAdapter catalog-enriched providers', () => {
   it('keeps a wire-declared fact over the card', async () => {
     const adapter = new OpenAICompatibleAdapter({ id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://example.test' });
     const original = globalThis.fetch;
-    // @ts-expect-error stub — the endpoint declares its own window and effort ladder.
-    globalThis.fetch = async () => ({
+    globalThis.fetch = stubFetch(async () => ({
       ok: true,
       json: async () => ({
         data: [{
@@ -270,7 +272,7 @@ describe('OpenAICompatibleAdapter catalog-enriched providers', () => {
           reasoning: { supported_efforts: ['medium', 'max'] },
         }],
       }),
-    }) as unknown as Response;
+    }) as unknown as Response);
     try {
       const models = await adapter.listModels();
       // The card would say 128_000 and low/medium/high; the wire says otherwise, so the wire wins.
@@ -287,11 +289,10 @@ describe('OpenAICompatibleAdapter catalog-enriched providers', () => {
   it('offers a tool-less card as tool-less', async () => {
     const adapter = new OpenAICompatibleAdapter({ id: 'groq', name: 'Groq', baseUrl: 'https://example.test' });
     const original = globalThis.fetch;
-    // @ts-expect-error stub
-    globalThis.fetch = async () => ({
+    globalThis.fetch = stubFetch(async () => ({
       ok: true,
       json: async () => ({ data: [{ id: 'llama-3.1-8b-instant' }, { id: 'brand-new-model-the-snapshot-has-never-heard-of' }] }),
-    }) as unknown as Response;
+    }) as unknown as Response);
     try {
       const models = await adapter.listModels();
       expect(models.map((model) => model.id)).toHaveLength(2);
@@ -317,8 +318,7 @@ describe('OpenAICompatibleAdapter deepseek-chat bridge', () => {
   it('offers both models as tool-free chat', async () => {
     const adapter = new OpenAICompatibleAdapter({ id: 'deepseek-chat', name: 'DeepSeek Chat', baseUrl: 'http://127.0.0.1:8000/v1' });
     const original = globalThis.fetch;
-    // @ts-expect-error stub
-    globalThis.fetch = async () => bridgeStub(['deepseek-chat', 'deepseek-expert']) as unknown as Response;
+    globalThis.fetch = stubFetch(async () => bridgeStub(['deepseek-chat', 'deepseek-expert']) as unknown as Response);
     try {
       const models = await adapter.listModels();
       expect(models.map((model) => model.id)).toEqual(['deepseek-chat', 'deepseek-expert']);
@@ -339,8 +339,7 @@ describe('OpenAICompatibleAdapter deepseek-chat bridge', () => {
     const adapter = new OpenAICompatibleAdapter({ id: 'deepseek-chat', name: 'DeepSeek Chat', baseUrl: 'http://127.0.0.1:8000/v1' });
     let body: Record<string, unknown> = {};
     const original = globalThis.fetch;
-    // @ts-expect-error stub
-    globalThis.fetch = async (_url: string, init: { body?: string }) => {
+    globalThis.fetch = stubFetch(async (_url: string, init: { body?: string }) => {
       body = JSON.parse(init.body ?? '{}') as Record<string, unknown>;
       return {
         ok: true,
@@ -354,7 +353,7 @@ describe('OpenAICompatibleAdapter deepseek-chat bridge', () => {
           },
         }),
       } as unknown as Response;
-    };
+    });
     try {
       for await (const _event of adapter.stream(request({ model: 'deepseek-expert', effort: 'high' }))) {
         // drain: the stream generator only fires the request once iterated.
@@ -370,8 +369,7 @@ describe('OpenAICompatibleAdapter deepseek-chat bridge', () => {
     const adapter = new OpenAICompatibleAdapter({ id: 'deepseek-chat', name: 'DeepSeek Chat', baseUrl: 'http://127.0.0.1:8000/v1' });
     let body: Record<string, unknown> = {};
     const original = globalThis.fetch;
-    // @ts-expect-error stub
-    globalThis.fetch = async (_url: string, init: { body?: string }) => {
+    globalThis.fetch = stubFetch(async (_url: string, init: { body?: string }) => {
       body = JSON.parse(init.body ?? '{}') as Record<string, unknown>;
       return {
         ok: true,
@@ -383,7 +381,7 @@ describe('OpenAICompatibleAdapter deepseek-chat bridge', () => {
           },
         }),
       } as unknown as Response;
-    };
+    });
     try {
       for await (const _event of adapter.stream(request({ model: 'deepseek-chat', effort: 'low' }))) {
         // drain
@@ -402,11 +400,13 @@ describe('OpenAICompatibleAdapter deepseek-chat bridge', () => {
  */
 describe('OpenAICompatibleAdapter tool names on the wire', () => {
   /** The tool list Studio actually publishes: dotted MCP-prefixed names. */
-  const studioTools = [
+  // Typed as the adapter's own `ToolSchema[]`: `as const` made it a readonly tuple, which the
+  // parameter rejects — the fixture must be exactly what the adapter accepts.
+  const studioTools: ToolSchema[] = [
     { name: 'studio.upload_image', description: 'upload', parameters: { type: 'object' } },
     { name: 'studio.script_read', description: 'read', parameters: { type: 'object' } },
     { name: 'get_studio_state', description: 'state', parameters: { type: 'object' } },
-  ] as const;
+  ];
 
   function streamStub(record: { body?: Record<string, unknown>; events: Array<Record<string, unknown>> }) {
     return async (_url: string, init: { body?: string }) => {
@@ -431,8 +431,7 @@ describe('OpenAICompatibleAdapter tool names on the wire', () => {
       { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_1', function: { name: 'studio_upload_image', arguments: '{"id":7}' } }] }, finish_reason: 'tool_calls' }] },
     ] };
     const original = globalThis.fetch;
-    // @ts-expect-error stub
-    globalThis.fetch = streamStub(record);
+    globalThis.fetch = stubFetch(streamStub(record));
     try {
       const events = [];
       for await (const event of adapter.stream(request({ tools: studioTools }))) {
@@ -455,8 +454,7 @@ describe('OpenAICompatibleAdapter tool names on the wire', () => {
       { choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: 'stop' }] },
     ] };
     const original = globalThis.fetch;
-    // @ts-expect-error stub
-    globalThis.fetch = streamStub(record);
+    globalThis.fetch = stubFetch(streamStub(record));
     try {
       for await (const _event of adapter.stream(request({
         tools: studioTools,
@@ -485,8 +483,7 @@ describe('OpenAICompatibleAdapter tool names on the wire', () => {
       { choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: 'stop' }] },
     ] };
     const original = globalThis.fetch;
-    // @ts-expect-error stub
-    globalThis.fetch = streamStub(record);
+    globalThis.fetch = stubFetch(streamStub(record));
     try {
       for await (const _event of adapter.stream(request({
         tools: [

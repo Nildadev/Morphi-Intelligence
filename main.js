@@ -142,10 +142,25 @@ function stopBackend() {
     const child = backend && backend.child;
     backend = null;
     if (!child) return;
+    // Ask for an orderly quit over the IPC channel first. On Windows `utilityProcess.kill()` is
+    // TerminateProcess, so the server's SIGTERM handler never runs and its Studio MCP child (plus the
+    // SQLite handle) is orphaned; the message is what actually reaches the shutdown path. The kill
+    // stays as the backstop for a server that is wedged.
+    let killed = false;
+    const force = setTimeout(() => {
+        killed = true;
+        try {
+            child.kill();
+        } catch (error) {
+            console.error('[main] Failed to stop server:', error.message);
+        }
+    }, 2500);
+    force.unref?.();
+    child.once('exit', () => clearTimeout(force));
     try {
-        child.kill();
+        child.postMessage({ type: 'shutdown' });
     } catch (error) {
-        console.error('[main] Failed to stop server:', error.message);
+        if (!killed) console.error('[main] Failed to ask the server to quit:', error.message);
     }
 }
 

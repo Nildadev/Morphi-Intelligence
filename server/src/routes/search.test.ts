@@ -36,7 +36,9 @@ function buildApp(): Express {
 
 const authed = (app: Express) => ({
   get: (url: string) => request(app).get(url).set('X-Morphi-Token', TOKEN),
-  post: (url: string, body?: unknown) => request(app).post(url).set('X-Morphi-Token', TOKEN).send(body),
+  post: (url: string, body?: unknown) => request(app).post(url).set('X-Morphi-Token', TOKEN)// supertest's `send` only accepts a serialisable body; the helper is deliberately untyped so a
+    // test can post a malformed one on purpose (that is what several routes are checked against).
+    .send(body as object),
 });
 
 describe('GET /api/search', () => {

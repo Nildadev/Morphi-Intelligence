@@ -4,6 +4,7 @@ import request from 'supertest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createTestDb } from '../../test/db';
 import { createApp } from '../app';
+import { eventsOfType } from '../harness/events/types';
 import type { EventPayloadMap, EventType, SessionEvent } from '../harness/events/types';
 import { createHarness, type Harness } from '../harness/harness';
 import { LlmRegistry } from '../harness/llm/registry';
@@ -163,7 +164,8 @@ function openStream(app: Express, url: string, body: unknown): Promise<{ status:
   return new Promise((resolve, reject) => {
     api(app)
       .post(url)
-      .send(body)
+      // The body is deliberately untyped at the call site (malformed payloads are part of the matrix).
+      .send(body as object)
       .end((error, response) => {
         if (error) reject(error);
         else resolve({ status: response.status, text: response.text, contentType: String(response.headers['content-type'] ?? '') });
@@ -194,8 +196,12 @@ function startStream(app: Express, body: Record<string, unknown>): {
   return { call, closed };
 }
 
-function rowsOfType(harness: Harness, sessionId: string, type: EventType): SessionEvent[] {
-  return harness.events.list(sessionId).filter((event) => event.type === type);
+/**
+ * Generic on purpose: a stored row's payload is a union of every event shape, so a caller that asks for
+ * `approval/request` rows must get THAT payload type and not have to cast to read `approvalId`.
+ */
+function rowsOfType<T extends EventType>(harness: Harness, sessionId: string, type: T): SessionEvent<T>[] {
+  return eventsOfType(harness.events.list(sessionId), type);
 }
 
 /**
@@ -206,8 +212,8 @@ function turnRows(harness: Harness, sessionId: string): SessionEvent[] {
   return harness.events.list(sessionId).filter((event) => event.type.startsWith('turn/'));
 }
 
-function framesOfType(frames: SseFrame[], type: string): SseFrame[] {
-  return frames.filter((frame) => frame.type === type);
+function framesOfType<T extends string>(frames: SseFrame[], type: T): Array<SseFrame & { type: T }> {
+  return frames.filter((frame): frame is SseFrame & { type: T } => frame.type === type);
 }
 
 function statusFrames(frames: SseFrame[]): string[] {

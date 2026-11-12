@@ -32,11 +32,25 @@ jobs:
         working-directory: client
         run: npm ci
 
-      - name: Typecheck
+      - name: Typecheck (source, test files, client build)
         run: npm run typecheck
+
+      - name: Lint the client
+        run: npm run lint
 
       - name: Test
         run: npm test
 
+      # The Electron main process is plain JS with its own node:test suite; it is not part of `npm test`.
+      - name: Test the Electron main process
+        run: npm run test:main
+
       - name: Build
         run: npm run build
+
+      # Boots the real server as a child process, asks it to quit over IPC and checks that it exits 0 with
+      # its database closed. A Windows `child.kill()` skips the shutdown path entirely, so this is the only
+      # check that the graceful branch still runs.
+      - name: Verify the server quits cleanly
+        working-directory: server
+        run: node scripts/quit-check.mjs

@@ -411,7 +411,10 @@ snapshot now captures the subtree BEFORE the destroy and the inverse is a recrea
 
 ## Verification gate (last green run)
 
-- `server tsc --noEmit` clean; `server vitest` **811 passed / 5 skipped** (5 skip = live probe).
+- `server tsc --noEmit` clean, and `server tsc --noEmit -p tsconfig.test.json` clean (test files are
+  type-checked for the first time: 78 fixture errors were hiding behind untyped mocks, e.g. a
+  `PostStateSnapshot` fixture without `created` and `McpGateway` stubs without `close`).
+- `server vitest` **818 passed / 5 skipped** (5 skip = live probe).
 - `MORPHI_LIVE_STUDIO=1 npx vitest run src/harness/checkpoints/liveProbe.test.ts` → **5/5 passed**
   on real `Place1` (script restore snapshot→mutate→undo→read-back; property restore incl. string
   `CollisionGroup` + `skipped`; Vector3/BrickColor reconstruction restored and re-inspected).
@@ -420,7 +423,12 @@ snapshot now captures the subtree BEFORE the destroy and the inverse is a recrea
   whose position AND rotation come back to the exact recorded matrix, a RENAME + REPARENT undone back
   to the old name and parent (with a hand reparent afterwards that survives), an INSERT undone by
   deleting what the turn created, and a PIVOT OFFSET restored to its exact twelve components.
-- `client tsc --noEmit` clean; `client vitest` **631 passed**.
+- `client tsc --noEmit` clean; `client eslint` 0 errors (19 warnings, each with its reason in
+  `eslint.config.js`); `client vitest` **634 passed**; `client vite build` ok.
+- `client playwright` **13/13 passed** (golden paths, shell surfaces, contrast + retired-idiom gates).
+- `node server/scripts/quit-check.mjs` → **QUIT CHECK OK**: the real server exits 0 on the IPC shutdown
+  message and closes SQLite (no `-wal`/`-shm` left). A Windows `child.kill()` skips that path entirely
+  and leaves both sidecars behind (measured).
 - `Place1` verified CLEAN after every live run (no leftover probe scripts/instances).
 
 ## Post-Phase-2 notes (live verified)

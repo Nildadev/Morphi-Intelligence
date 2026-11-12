@@ -27,9 +27,13 @@ function stubMcp(): McpGateway {
     connected: false,
     studioLinked: false,
     server: { source: 'none', path: null, version: null },
+    studio: null,
+    toolCount: 0,
+    lastError: null,
     listTools: async () => [],
     callTool: async () => undefined,
     reconnect: async () => undefined,
+    // Task 31 shutdown contract: the test stub has nothing to release.
     close: async () => undefined,
   };
 }

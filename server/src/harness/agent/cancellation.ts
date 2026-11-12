@@ -25,4 +25,16 @@ export class CancellationRegistry {
   finish(key: string, controller: AbortController): void {
     if (this.active.get(key) === controller) this.active.delete(key);
   }
+
+  /**
+   * Abort everything that is still running and forget it. Used on quit: each live turn holds the SSE
+   * response open, and `server.close()` waits for that response, so a quit without this hangs until
+   * the shutdown timeout.
+   */
+  abortAll(): number {
+    const controllers = [...this.active.values()];
+    this.active.clear();
+    for (const controller of controllers) controller.abort();
+    return controllers.length;
+  }
 }

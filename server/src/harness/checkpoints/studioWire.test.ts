@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { McpGateway, ToolSchema } from '../tools/types';
+import type { ToolSchema } from '../llm/types';
+import type { McpGateway } from '../tools/types';
 import {
   captureCframe,
   captureIdentity,
@@ -52,16 +53,21 @@ function rawGateway(
   return {
     connected: true,
     studioLinked: true,
-    server: null,
+    server: { source: 'studio-builtin', path: null, version: null },
     studio: null,
     toolCount: Object.keys(tools).length,
     lastError: null,
     calls,
     listTools: async () =>
-      Object.keys(tools).map((name) => ({
+      Object.keys(tools).map((name): ToolSchema => ({
         name,
         description: name,
-        parameters: { type: 'object', properties: { target_file: {}, file_path: {}, code: {}, path: {} } },
+        // JsonSchema is a recursive shape, so an empty `{}` per property is not one: the strings here
+        // are what the official proxy actually declares for these tools.
+        parameters: {
+          type: 'object',
+          properties: { target_file: { type: 'string' }, file_path: { type: 'string' }, code: { type: 'string' }, path: { type: 'string' } },
+        },
       })),
     callTool: async (name: string, args: unknown) => {
       const argsRecord = (args ?? {}) as Record<string, unknown>;
@@ -83,16 +89,19 @@ function appGateway(
   return {
     connected: true,
     studioLinked: true,
-    server: null,
+    server: { source: 'studio-builtin', path: null, version: null },
     studio: null,
     toolCount: Object.keys(tools).length,
     lastError: null,
     calls,
     listTools: async () =>
-      Object.keys(tools).map((name) => ({
+      Object.keys(tools).map((name): ToolSchema => ({
         name: `studio.${name}`,
         description: name,
-        parameters: { type: 'object', properties: { target_file: {}, file_path: {}, code: {}, path: {} } },
+        parameters: {
+          type: 'object',
+          properties: { target_file: { type: 'string' }, file_path: { type: 'string' }, code: { type: 'string' }, path: { type: 'string' } },
+        },
       })),
     callTool: async (name: string, args: unknown) => {
       const argsRecord = (args ?? {}) as Record<string, unknown>;
@@ -114,7 +123,7 @@ function legacyGateway(
   return {
     connected: true,
     studioLinked: true,
-    server: null,
+    server: { source: 'studio-builtin', path: null, version: null },
     studio: null,
     toolCount: Object.keys(tools).length,
     lastError: null,
@@ -656,7 +665,7 @@ describe('identity - a rename and a reparent both have an inverse', () => {
   });
 
   it('compares name and parent in the identity capture', async () => {
-    const live = { name: 'NewPart', parentPath: 'ServerStorage', cframe: null };
+    const live = { name: 'NewPart', parentPath: 'ServerStorage', cframe: null, pivot: null };
     expect(sameIdentity({ $name: 'OldPart' }, { $parent: 'Workspace' }, live)).toBe(false);
     expect(sameIdentity({ $name: 'NewPart' }, { $parent: 'ServerStorage' }, live)).toBe(true);
     expect(sameIdentity({ $name: 'OldPart' }, undefined, live)).toBe(false);

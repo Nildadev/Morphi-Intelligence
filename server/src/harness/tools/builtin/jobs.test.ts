@@ -24,7 +24,8 @@ describe('job tools', () => {
         status: 'done' as const,
         summary: `summarised: ${task}`,
       })),
-    } as never;
+      // The tool factory only calls `run`; the type is the real one so a rename breaks here, not at runtime.
+    } as unknown as Parameters<typeof createJobTools>[0]['subagents'];
     const [start, list, output] = createJobTools({ jobs, subagents });
 
     const started = await start.execute({ task: 'do the thing' }, context('s1')) as {

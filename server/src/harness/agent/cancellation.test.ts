@@ -27,3 +27,23 @@ describe('CancellationRegistry', () => {
     expect(registry.has('s1')).toBe(false);
   });
 });
+
+describe('CancellationRegistry.abortAll', () => {
+    it('aborts every live turn and forgets them, because a quit is not a per-session cancel', () => {
+        const registry = new CancellationRegistry();
+        const first = registry.start('s1');
+        const second = registry.start('s2');
+
+        expect(registry.abortAll()).toBe(2);
+
+        expect(first.signal.aborted).toBe(true);
+        expect(second.signal.aborted).toBe(true);
+        expect(registry.has('s1')).toBe(false);
+        expect(registry.has('s2')).toBe(false);
+    });
+
+    it('reports zero when nothing is running', () => {
+        const registry = new CancellationRegistry();
+        expect(registry.abortAll()).toBe(0);
+    });
+});

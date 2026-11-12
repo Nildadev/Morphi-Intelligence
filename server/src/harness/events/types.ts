@@ -53,6 +53,19 @@ export interface SessionEvent<T extends EventType = EventType> {
   id: number; sessionId: string; seq: number; type: T; payload: EventPayloadMap[T]; schemaVersion: 1; createdAt: number;
 }
 
+/**
+ * A stored log is a list whose `payload` is the union of every event shape, so reading a field needs
+ * the row narrowed first. These two do that narrowing once instead of every reader casting, which is
+ * how a test ends up asserting against `payload.content` on a row that has none.
+ */
+export function eventOfType<T extends EventType>(events: readonly SessionEvent[], type: T): SessionEvent<T> | undefined {
+  return events.find((event): event is SessionEvent<T> => event.type === type);
+}
+
+export function eventsOfType<T extends EventType>(events: readonly SessionEvent[], type: T): SessionEvent<T>[] {
+  return events.filter((event): event is SessionEvent<T> => event.type === type);
+}
+
 export interface Emit {
   durable(event: NewSessionEvent): void;
   live(event: LiveEvent): void;

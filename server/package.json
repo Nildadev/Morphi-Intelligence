@@ -12,7 +12,8 @@
     "pretest": "node ../scripts/sqlite-abi.mjs node",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "typecheck:tests": "tsc --noEmit -p tsconfig.test.json"
   },
   "keywords": [],
   "author": "",

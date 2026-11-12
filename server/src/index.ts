@@ -14,6 +14,7 @@ import { OpenAICompatibleAdapter } from './harness/llm/openaiCompatible';
 import { MCP_SETTINGS_ID, createMcpGateway, createMcpLog } from './harness/mcp/serviceGateway';
 import { McpService } from './services/McpService';
 import { mountRoutes } from './routes';
+import { createShutdown } from './shutdown';
 
 // Root `.env` for `npm run dev`, `server/.env` for a packaged build; real keys normally arrive
 // from Electron main over `parentPort` instead.
@@ -234,15 +235,25 @@ type ParentPort = {
 
 const parentPort = (process as unknown as { parentPort?: ParentPort }).parentPort;
 
-if (parentPort) {
-  // utilityProcess wraps messages in a MessageEvent-like object ({ data }), while
-  // plain Node IPC (tests, child_process) delivers the payload itself. Accept both.
-  parentPort.on('message', (event: unknown) => {
-    const message = ((event as { data?: unknown } | null | undefined)?.data ?? event) as
-      | { type?: unknown; keys?: unknown }
-      | null
-      | undefined;
-    if (!message || message.type !== 'credentials') return;
+/**
+ * One handler for both channels. `utilityProcess` wraps messages in a MessageEvent-like object
+ * (`{ data }`), while plain Node IPC (a launcher, a test) delivers the payload itself.
+ *
+ * `shutdown` rides this channel because a Windows `utilityProcess.kill()` is TerminateProcess: the
+ * SIGTERM handler below never runs there, so the graceful path needs a message (MEASURED on this
+ * machine by killing the child and watching the Studio MCP child survive).
+ */
+const onParentMessage = (event: unknown): void => {
+  const message = ((event as { data?: unknown } | null | undefined)?.data ?? event) as
+    | { type?: unknown; keys?: unknown }
+    | null
+    | undefined;
+  if (!message) return;
+  if (message.type === 'shutdown') {
+    void shutdown();
+    return;
+  }
+  if (message.type !== 'credentials') return;
     if (!message.keys || typeof message.keys !== 'object' || Array.isArray(message.keys)) {
       registry.setCredentials({});
       void registry.refreshModels();
@@ -256,13 +267,24 @@ if (parentPort) {
     // The key list is the only thing that makes a provider usable, so the catalog is re-pulled
     // here: a model picker cannot show a model the registry never fetched.
     void registry.refreshModels();
-  });
-}
+};
+
+/** Both directions of the parent channel: Electron's `utilityProcess`, or plain Node IPC. */
+const hasParentIpc = parentPort !== undefined || typeof process.send === 'function';
+const postToParent = (message: unknown): void => {
+  if (parentPort) parentPort.postMessage(message);
+  else process.send?.(message);
+};
+
+if (parentPort) parentPort.on('message', onParentMessage);
+// Node's own IPC channel: lets a launcher (and the shutdown test) ask for the same orderly quit
+// without being Electron.
+if (typeof process.send === 'function') process.on('message', onParentMessage);
 
 server.listen(config.port, '127.0.0.1', () => {
   const address = server.address();
   const port = typeof address === 'object' && address ? address.port : config.port;
-  parentPort?.postMessage({ type: 'ready', port });
+  if (hasParentIpc) postToParent({ type: 'ready', port });
   console.log(`Morphi server listening on http://127.0.0.1:${port}`);
   void registry.refreshModels();
 
@@ -281,17 +303,26 @@ server.listen(config.port, '127.0.0.1', () => {
   }
 });
 
-// Task 31 / Task 17 review Minor 7: quit must not leave an orphaned StudioMCP child holding the pipe.
-let shuttingDown = false;
-const shutdown = (): void => {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  void (async () => {
-    try { await mcp.close(); } catch { /* best effort */ }
-    try { await harness.dispose(); } catch { /* best effort */ }
-    server.close(() => process.exit(0));
-    setTimeout(() => process.exit(0), 1500).unref?.();
-  })();
-};
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+// Task 31 / Task 17 review Minor 7 / Task 32: quit must not leave an orphaned StudioMCP child holding
+// the pipe, a WAL behind an open handle, or a live turn holding the response `server.close()` waits
+// for. The order lives in `shutdown.ts` so it is testable without booting a server.
+const shutdown = createShutdown({
+  abortTurns: () => {
+    const aborted = harness.cancellations.abortAll();
+    if (aborted > 0) console.log(`[shutdown] aborted ${aborted} live turn(s)`);
+  },
+  closeMcp: () => mcp.close(),
+  disposeHarness: () => harness.dispose(),
+  closeServer: (onClosed) => {
+    server.close(onClosed);
+    // Nothing new may be accepted after this point; open responses are drained by `abortAll` above.
+    server.closeAllConnections?.();
+  },
+  closeDb: () => db.close(),
+  exit: (code) => process.exit(code),
+});
+// The Electron main process sends SIGTERM; Ctrl-C in `npm run dev` sends SIGINT. Windows also emits
+// SIGHUP when the console window closes.
+process.on('SIGINT', () => void shutdown());
+process.on('SIGTERM', () => void shutdown());
+process.on('SIGHUP', () => void shutdown());

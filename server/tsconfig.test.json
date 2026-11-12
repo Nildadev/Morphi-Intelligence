@@ -1,0 +1,17 @@
+{
+  // `tsconfig.json` excludes test files, so today nothing type-checks them: a test can call a
+  // function with the wrong shape and only the runtime notices. This config type-checks the same
+  // source WITH the tests, and emits nothing (CI runs it as `npm run typecheck:tests`).
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // Tests run on the installed Node (>= 22), so they may use what the shipped `es2020` target avoids:
+    // `Array.prototype.at`, `Object.hasOwn`, `structuredClone`. Nothing is emitted, so the stricter
+    // target for `src/` is untouched.
+    "target": "es2022",
+    "lib": ["es2022"],
+    "types": ["node", "vitest/globals"]
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "test", "dist"]
+}

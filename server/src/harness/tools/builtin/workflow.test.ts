@@ -14,10 +14,13 @@ function fixture() {
   const sessions = new SessionStore(db, events);
   sessions.create('proj_x', 'title');
   const parentId = sessions.list()[0]?.id ?? '';
+  // Typed from the runner's own dependency contract instead of `as never`: with `never` every read of
+  // `agent.runTurn` below is unchecked (and the assertion `toHaveBeenCalled` proves nothing about the
+  // real call shape).
   const agent = {
     runTurn: vi.fn(async () => ({ turnId: 'turn_1', status: 'completed' })),
-  } as never;
-  const tools = { list: () => [] } as never;
+  } as unknown as ConstructorParameters<typeof SubagentRunner>[0]['agent'];
+  const tools = { list: () => [] } as unknown as ConstructorParameters<typeof SubagentRunner>[0]['tools'];
   const runner = new SubagentRunner({ events, sessions, agent, tools });
   return { events, sessions, parentId, runner, agent };
 }

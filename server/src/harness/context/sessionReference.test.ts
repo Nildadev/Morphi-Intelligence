@@ -39,9 +39,11 @@ describe('session reference', () => {
       { type: 'user/message', payload: { messageId: 'm1', content: 'hello', source: 'user' } },
     ]);
     const tool = createSessionRefTool({ events });
-    const result = await tool.execute({ session_id: sessionId }) as { sessionId: string; snapshot: string };
+    // `execute` always takes the tool context; the tool only needs the abort signal from it.
+    const ctx = { signal: new AbortController().signal } as Parameters<typeof tool.execute>[1];
+    const result = await tool.execute({ session_id: sessionId }, ctx) as { sessionId: string; snapshot: string };
     expect(result.sessionId).toBe(sessionId);
     expect(result.snapshot).toContain('USER: hello');
-    await expect(tool.execute({ session_id: 'missing' })).rejects.toThrow(/no readable history/);
+    await expect(tool.execute({ session_id: 'missing' }, ctx)).rejects.toThrow(/no readable history/);
   });
 });

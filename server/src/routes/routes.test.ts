@@ -725,7 +725,7 @@ describe('providers routes', () => {
       expect(res.body).toMatchObject({ state: 'unreachable', baseUrl: 'http://127.0.0.1:8000/v1' });
       // Health check only: a `chat/completions` request here would spend the account's rate limit
       // on a liveness question. `/healthz` sits at the server root — the `/v1` prefix is stripped.
-      expect(fetchMock.mock.calls.map((call) => String(call[0]))).toEqual(['http://127.0.0.1:8000/healthz']);
+      expect(fetchMock.mock.calls.map((call: unknown[]) => String(call[0]))).toEqual(['http://127.0.0.1:8000/healthz']);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -1049,6 +1049,9 @@ describe('mcp routes', () => {
       {
         connected: false,
         studioLinked: false,
+        // Task 31 made the resolved server triple mandatory on the bridge: a gateway may not report a
+        // source it never resolved.
+        serverInfo: { source: 'none', path: null, version: null },
         connect: async () => undefined,
         close: async () => undefined,
         listTools: async () => ({ tools: [] }),

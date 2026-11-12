@@ -3,10 +3,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createTestDb } from '../../../test/db';
 import type { LlmMessage } from '../llm/types';
 import { EventStore } from '../events/store';
+import { eventOfType } from '../events/types';
 import type { NewSessionEvent } from '../events/types';
 import { estimateTokens } from './estimator';
 import { pruneMessages, omittedResultText } from './pruner';
-import { renderTranscript, summarizeMessages, SUMMARY_FALLBACK_CHARS } from './summarizer';
+import { renderTranscript, summarizeMessages, SUMMARY_FALLBACK_CHARS, type Complete } from './summarizer';
 import { CompactionService, DEFAULT_CONTEXT_WINDOW } from './service';
 import type { CompactionConfig } from './service';
 
@@ -90,7 +91,13 @@ function prunedPrefix(messages: LlmMessage[], keepTurns: number): LlmMessage[] {
   return messages.map((message, index) => (index < boundary ? prunedTool(message) : message));
 }
 
-function serviceFor(db: Database.Database, complete = vi.fn(async () => 'SESSION SUMMARY')) {
+/**
+ * The mocks are typed with the real `Complete` signature. An untyped `vi.fn` records `[]` as its call
+ * tuple, so `mock.calls[0][1]` type-checks only by accident (and reads `undefined` at runtime).
+ */
+type CompleteMock = ReturnType<typeof vi.fn<Complete>>;
+
+function serviceFor(db: Database.Database, complete: CompleteMock = vi.fn<Complete>(async () => 'SESSION SUMMARY')) {
   const store = new EventStore(db);
   const service = new CompactionService({ events: store, complete, model: 'test-model', config: CONFIG });
   return { store, service, complete };
@@ -173,7 +180,7 @@ describe('summarizeMessages', () => {
   ];
 
   it('returns the model summary and prompts with the transcript', async () => {
-    const complete = vi.fn(async () => 'MODEL SUMMARY');
+    const complete = vi.fn<Complete>(async () => 'MODEL SUMMARY');
 
     const summary = await summarizeMessages(messages, complete, 'test-model');
 
@@ -320,7 +327,7 @@ describe('CompactionService.buildContext', () => {
     expect(prompt).toContain(pad('BOTH1', 700));
     expect(prompt).not.toContain(pad('T1', 3000));
 
-    const summary = store.list('s1').find((event) => event.type === 'compaction/summary')!;
+    const summary = eventOfType(store.list('s1'), 'compaction/summary')!;
     const covered = (summary.payload as { coveredFrom: number; coveredTo: number }).coveredTo;
     // Nothing in the returned tail is inside the covered range.
     const kept = fix.messages.slice(fix.messages.findIndex((message) => message.content === 'U4'));
@@ -423,7 +430,7 @@ describe('CompactionService.buildContext', () => {
 
     expect(warn).toHaveBeenCalledTimes(1);
 
-    const summary = store.list('s1').find((event) => event.type === 'compaction/summary')!;
+    const summary = eventOfType(store.list('s1'), 'compaction/summary')!;
     const head = prunedPrefix(fix.messages, CONFIG.keepRecentTurns).slice(0, fix.messages.findIndex((message) => message.content === 'U4'));
     expect(summary.payload).toMatchObject({ summary: renderTranscript(head).slice(0, SUMMARY_FALLBACK_CHARS) });
     expect(context[0]).toEqual({ role: 'system', content: summary.payload.summary });

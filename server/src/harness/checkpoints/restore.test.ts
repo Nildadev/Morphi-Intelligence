@@ -3,6 +3,7 @@ import { createTestDb } from '../../../test/db';
 import { applyRestore, previewRestore, restoreTurn } from './restore';
 import { CheckpointStore } from './store';
 import type { PostStateSnapshot, PreStateSnapshot } from './snapshot';
+import type { ToolSchema } from '../llm/types';
 import type { McpGateway } from '../tools/types';
 
 /**
@@ -341,7 +342,7 @@ describe('restoreTurn - the Undo button on the script summary', () => {
                 targets: ['A'],
                 outcome: 'ok',
                 preState: { entries: [{ kind: 'script', path: 'A', source: 'old' }], inverse: [{ tool: 'script_write', path: 'A', source: 'old' }], notes: [] },
-                postState: { entries: [{ kind: 'script', path: 'A', source: 'new' }], notes: [] },
+                postState: { entries: [{ kind: 'script', path: 'A', source: 'new' }], created: [], notes: [] },
                 restorable: true,
                 restoreReason: 'ok',
             },
@@ -371,7 +372,7 @@ describe('restoreTurn - the Undo button on the script summary', () => {
                 targets: ['A'],
                 outcome: 'ok',
                 preState: { entries: [{ kind: 'script', path: 'A', source: 'old' }], inverse: [{ tool: 'script_write', path: 'A', source: 'old' }], notes: [] },
-                postState: { entries: [{ kind: 'script', path: 'A', source: 'new' }], notes: [] },
+                postState: { entries: [{ kind: 'script', path: 'A', source: 'new' }], created: [], notes: [] },
                 restorable: true,
                 restoreReason: 'ok',
             },
@@ -532,8 +533,10 @@ describe('restore of a MOVED part (CFrame)', () => {
       },
     });
 
-  const postState = (marker: ReturnType<typeof cf>) => ({
-    entries: [{ kind: 'properties' as const, path: 'Workspace.Part', properties: { Anchored: true, CFrame: marker } }],
+  const postState = (marker: ReturnType<typeof cf>): PostStateSnapshot => ({
+    entries: [{ kind: 'properties', path: 'Workspace.Part', properties: { Anchored: true, CFrame: marker } }],
+    // A moved part was there before the turn: nothing was created, so undo may not delete anything.
+    created: [],
     notes: [],
   });
 
@@ -552,8 +555,12 @@ describe('restore of a MOVED part (CFrame)', () => {
       toolCount: 2,
       lastError: null,
       writes,
-      listTools: async () => ['inspect_instance', 'execute_luau'].map((name) => ({
-        name, description: name, parameters: { type: 'object', properties: { path: {}, code: {} } },
+      listTools: async () => ['inspect_instance', 'execute_luau'].map((name): ToolSchema => ({
+        name,
+        description: name,
+        // JsonSchema is recursive, so `{}` is not a schema: these are the string params the fake
+        // server declares, and the reader only looks at the property NAMES.
+        parameters: { type: 'object', properties: { path: { type: 'string' }, code: { type: 'string' } } },
       })),
       callTool: async (name, args) => {
         const record = (args ?? {}) as Record<string, unknown>;
