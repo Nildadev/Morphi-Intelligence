@@ -12,7 +12,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest]
-        node-version: [22.12.0]
+        # `22` (latest 22.x), not a pinned 22.12.0: `jsdom@30` -- the client test environment -- declares
+        # `node: ^22.22.2 || ^24.15.0 || >=26.0.0`. On 22.12.0 every client test file failed to start its
+        # worker ("Cannot read properties of undefined (reading 'bind')") while the server suite passed,
+        # so the pin turned a supported Node version into a red build.
+        node-version: [22]
     steps:
       - uses: actions/checkout@v4
 

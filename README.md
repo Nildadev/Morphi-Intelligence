@@ -8,7 +8,7 @@ Current version: **1.1.0**.
 ## Requirements
 
 - Windows 10/11 (the packaged build is a portable executable)
-- Node.js `^20.19.0 || >=22.12.0` and npm 10
+- Node.js `^22.22.2 || >=24.15.0` and npm 10 (the client test environment, `jsdom@30`, needs it)
 - Roblox Studio with its built-in MCP server enabled (see [Roblox Studio](#roblox-studio))
 
 ## Run it
