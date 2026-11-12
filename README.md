@@ -56,6 +56,7 @@ The same panel accepts a manual override path, validated against the list above 
 | `morphi.db` | SQLite: projects, sessions, and the append-only event log that chat history and undo derive from |
 | `settings.json` | UI preferences, MCP path override, title model, provider priority, compaction thresholds |
 | `credentials.json` | Provider keys, encrypted with Electron `safeStorage` (Windows DPAPI) |
+| `crash.log` | Only written when the main process hits an unhandled error; credentials are redacted |
 
 ## Security model
 
