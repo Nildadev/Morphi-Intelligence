@@ -1130,7 +1130,13 @@ describe('mcp routes', () => {
     expect(isAllowedMcpPath(`${exe};calc`)).toBe(false);
     expect(isAllowedMcpPath('C:/tmp/a.exe\u0000b')).toBe(false);
     expect(isAllowedMcpPath('')).toBe(false);
-    expect(isAllowedMcpPath(exe.toUpperCase(), { exists: () => true })).toBe(true);
+    // Case folding is a win32 contract -- `RBX-STUDIO-MCP.EXE` names the same file there. It was
+    // asserted without `platform`, so on the Linux runner the same path was a *different* name and the
+    // allowlist refused it, which is also correct: the assertion, not the code, was platform-specific.
+    expect(isAllowedMcpPath(exe.toUpperCase(), { platform: 'win32', exists: () => true })).toBe(true);
+    if (process.platform !== 'win32') {
+      expect(isAllowedMcpPath(exe.toUpperCase(), { exists: () => true })).toBe(false);
+    }
     expect(isAllowedMcpPath(path.join(dir, 'ghost.exe'))).toBe(false);
   });
 
