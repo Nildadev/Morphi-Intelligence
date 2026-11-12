@@ -1,11 +1,36 @@
 import { createContext, useCallback, useContext, useState, type ReactElement, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import bash from 'react-syntax-highlighter/dist/esm/languages/prism/bash';
+import css from 'react-syntax-highlighter/dist/esm/languages/prism/css';
+import javascript from 'react-syntax-highlighter/dist/esm/languages/prism/javascript';
+import json from 'react-syntax-highlighter/dist/esm/languages/prism/json';
+import lua from 'react-syntax-highlighter/dist/esm/languages/prism/lua';
+import markup from 'react-syntax-highlighter/dist/esm/languages/prism/markup';
+import python from 'react-syntax-highlighter/dist/esm/languages/prism/python';
+import sql from 'react-syntax-highlighter/dist/esm/languages/prism/sql';
+import typescript from 'react-syntax-highlighter/dist/esm/languages/prism/typescript';
 import { Check, Copy } from '../icons';
 import { vi } from '../../i18n/vi';
 import { StreamWords } from './StreamWords';
+
+// Roblox work is Luau, so the highlighter ships only the grammars a reply actually contains: the full
+// `Prism` bundle drags every language in (1433KB of JS on disk, 862KB with this list). A fence whose
+// language is not registered still renders, just without the theme's colours, so a missing one is silent.
+// `registerLanguage` keys on the grammar's OWN name and ignores the first argument, and `alias` is the
+// only way to add the short names a model writes (MEASURED: `registerLanguage('luau', lua)` produced a
+// ```luau block with zero token spans).
+for (const grammar of [lua, typescript, javascript, json, bash, python, sql, css, markup]) {
+    SyntaxHighlighter.registerLanguage('', grammar);
+}
+SyntaxHighlighter.alias('lua', ['luau', 'rbxlua']);
+SyntaxHighlighter.alias('typescript', ['ts', 'tsx']);
+SyntaxHighlighter.alias('javascript', ['js', 'jsx']);
+SyntaxHighlighter.alias('bash', ['sh', 'shell', 'console']);
+SyntaxHighlighter.alias('python', ['py']);
+SyntaxHighlighter.alias('markup', ['html', 'xml', 'svg']);
 
 function CodeBlock({ language, code }: { language: string; code: string }) {
     const [copied, setCopied] = useState(false);

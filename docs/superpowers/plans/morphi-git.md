@@ -424,7 +424,8 @@ snapshot now captures the subtree BEFORE the destroy and the inverse is a recrea
   to the old name and parent (with a hand reparent afterwards that survives), an INSERT undone by
   deleting what the turn created, and a PIVOT OFFSET restored to its exact twelve components.
 - `client tsc --noEmit` clean; `client eslint` 0 errors (19 warnings, each with its reason in
-  `eslint.config.js`); `client vitest` **634 passed**; `client vite build` ok.
+  `eslint.config.js`); `client vitest` **636 passed**; `client vite build` 862KB (was 1433KB before the
+  highlighter switched to `PrismLight`: only the grammars a reply uses, aliased by hand).
 - `client playwright` **13/13 passed** (golden paths, shell surfaces, contrast + retired-idiom gates).
 - Packaged build (`npm run dist`): `dist_electron/win-unpacked/Morphi Intelligence.exe` launches, boots the
   server child on an OS-assigned port, renders the shell against the real `%APPDATA%` database, and closing
