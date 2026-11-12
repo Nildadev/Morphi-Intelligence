@@ -481,6 +481,72 @@ check('the created part is gone after the undo', (await existsAt('Workspace.Morp
 check('the place still has its own script', (await existsAt(A)) === 'exists');
 
 // ---------------------------------------------------------------------------------------------
+// Scenario 7 — a PIVOT OFFSET: reported only as pseudo-paths, restored as a real CFrame
+// ---------------------------------------------------------------------------------------------
+console.log('\n[7] pivot-offset turn');
+
+/**
+ * The instance's pivot offset, as the twelve components Studio actually holds.
+ * MEASURED LIVE: only a BasePart owns `PivotOffset` — a Model answers "PivotOffset is not a valid
+ * member of Model", and its pivot is the separate `WorldPivot` captured with the transform.
+ */
+async function pivotOf(name) {
+  return withStudio(async (client) => {
+    const code = 'local inst = game:GetService("Workspace"):FindFirstChild(' + JSON.stringify(name) + ')\n'
+      + 'if inst == nil then return "missing" end\n'
+      + 'local ok, pivot = pcall(function() return inst.PivotOffset end)\n'
+      + 'if not ok or typeof(pivot) ~= "CFrame" then return "none" end\n'
+      + 'local x, y, z, r00, r01, r02, r10, r11, r12, r20, r21, r22 = pivot:GetComponents()\n'
+      + 'return string.format("%.3f,%.3f,%.3f|%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f", x, y, z, r00, r01, r02, r10, r11, r12, r20, r21, r22)';
+    const result = await client.callTool({ name: 'execute_luau', arguments: { code, datamodel_type: 'Edit' } });
+    return String(result.content?.find((part) => typeof part.text === 'string')?.text ?? '').trim();
+  });
+}
+
+await withStudio((client) => client.callTool({
+  name: 'execute_luau',
+  arguments: {
+    code: 'local ws = game:GetService("Workspace")\n'
+      + 'local old = ws:FindFirstChild("MorphiE2EPivot")\n'
+      + 'if old ~= nil then old:Destroy() end\n'
+      + 'local part = Instance.new("Part")\n'
+      + 'part.Name = "MorphiE2EPivot"\n'
+      + 'part.Anchored = true\n'
+      + 'part.Size = Vector3.new(4, 1, 2)\n'
+      + 'part.CFrame = CFrame.new(10, 5, 0)\n'
+      + 'part.Parent = ws\n'
+      // A rotation plus a translation: a restore that only put the position back would pass a
+      // position-only check, which is why the assertion below compares all twelve components.
+      + 'part.PivotOffset = CFrame.new(1, 2, 3) * CFrame.Angles(0, math.rad(30), 0)\n'
+      + 'return "ok"',
+    datamodel_type: 'Edit',
+  },
+}));
+
+const beforePivot = await pivotOf('MorphiE2EPivot');
+check('part seeded with a rotated pivot offset', beforePivot.includes('|'), beforePivot);
+
+const pivotSession = await newSession('e2e-pivot-undo');
+const pivotTurn = await turn(pivotSession, '/script studio-pivot');
+check('pivot turn stream finished', pivotTurn.status === 200, `${pivotTurn.sse.length} bytes`);
+const afterTurnPivot = await pivotOf('MorphiE2EPivot');
+check('the turn really moved the pivot offset', afterTurnPivot !== beforePivot, afterTurnPivot);
+
+const pivotRow = await restorableCallIds(pivotSession);
+check('pivot checkpoint recorded as restorable', pivotRow.restorable.length === 1,
+  `${pivotRow.restorable.length} restorable: ${pivotRow.callIds.join(', ')}`);
+if (pivotRow.restorable.length === 0) console.log(JSON.stringify(pivotRow.rows, null, 2).slice(0, 2000));
+
+const pivotUndo = await api('POST', `/api/sessions/${pivotSession}/undo-turn`, { callIds: pivotRow.callIds });
+check('pivot undo-turn 200', pivotUndo.status === 200, JSON.stringify(pivotUndo.body).slice(0, 400));
+check('pivot undo reported a restore', pivotUndo.body?.status === 'restored', JSON.stringify(pivotUndo.body).slice(0, 800));
+const backPivot = await pivotOf('MorphiE2EPivot');
+check('pivot offset is back to its exact twelve components', backPivot === beforePivot, `${backPivot} vs ${beforePivot}`);
+
+await destroyLive('Workspace.MorphiE2EPivot');
+check('pivot probe part removed from the place', (await pivotOf('MorphiE2EPivot')) === 'missing');
+
+// ---------------------------------------------------------------------------------------------
 // Cleanup — the place must not keep probe fixtures
 // ---------------------------------------------------------------------------------------------
 await destroyLive(A);

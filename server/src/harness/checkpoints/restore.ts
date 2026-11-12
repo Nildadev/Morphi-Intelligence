@@ -15,6 +15,7 @@ import {
   sameCframe,
   setInstanceProperties,
   sameIdentity,
+  samePivot,
   writeScriptSource,
   type CapturedCframe,
   type CapturedIdentity,
@@ -172,6 +173,13 @@ async function detectDrift(
             if (!sameIdentity(markers.Name, markers.Parent, live)) differing.push(key);
             continue;
           }
+          // A PivotOffset is an OFFSET measured against the transform: comparing it with the CFrame
+          // would report every part as drifted, and comparing the CFrame with it would hide a moved
+          // pivot. Each marker is diffed against its own capture.
+          if (key === 'PivotOffset') {
+            if (!samePivot(marker, live)) differing.push(key);
+            continue;
+          }
           if (!sameCframe(marker as CframeValue, live.cframe)) differing.push(key);
         }
         return differing;
@@ -272,7 +280,7 @@ async function detectDrift(
 }
 
 /** Keys whose value is captured outside the bag (see `identityMarkers`). */
-const IDENTITY_KEYS = ['Name', 'Parent', 'CFrame', 'WorldPivot'] as const;
+const IDENTITY_KEYS = ['Name', 'Parent', 'CFrame', 'WorldPivot', 'PivotOffset'] as const;
 
 /** Keys excluded from the scalar comparison, because they are markers handled above. */
 function scalarKeys(source: Record<string, unknown>): string[] {
@@ -470,6 +478,12 @@ async function applyStep(
   };
   for (const key of written.applied) {
     const before = step.properties[key];
+    if (key === 'PivotOffset') {
+      // Same $cframe marker shape as the transform, so this has to come FIRST — read against the CFrame
+      // it would report a false mismatch for every part that has a pivot offset.
+      if (!samePivot(before, await liveIdentity())) mismatched.push(key);
+      continue;
+    }
     if (isCframeMarkerValue(before)) {
       // A transform has no bag entry of its own: compare the matrix, not `live['CFrame']`.
       const after = (await liveIdentity())?.cframe ?? null;

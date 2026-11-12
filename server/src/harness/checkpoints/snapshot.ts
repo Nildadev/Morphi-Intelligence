@@ -379,16 +379,80 @@ export function pathFromLuau(code: string): string | null {
     if (segments.length > 0) return segments.join('.');
   }
 
+  const direct = chainPathOf(code);
+  if (direct !== null) return direct;
+  // A path built through locals is the shape a model writes most often:
+  //   local ws = game:GetService("Workspace")
+  //   local part = ws:FindFirstChild("Part")
+  //   part.CFrame = …
+  // Each local is resolved in order, so a variable can be built from a previous one. Only an
+  // UNAMBIGUOUS answer is accepted: when the code builds several instance paths, restoring the wrong
+  // one would overwrite user work, so null (non-restorable) is the safe answer.
+  const locals = resolveLocals(code);
+  const paths = [...new Set([...locals.values()].filter((path) => path.split('.').length >= 2))];
+  // A local built FROM another local is a prefix of it (`folder` then `folder.Crate`): that is one
+  // target, not two. Two unrelated branches stay ambiguous and answer null.
+  const candidates = paths.filter((path) => !paths.some((other) => other !== path && other.startsWith(`${path}.`)));
+  return candidates.length === 1 ? candidates[0]! : null;
+}
+
+/** The one `GetService(...)`/`workspace` chain the code starts with, including its trailing segments. */
+function chainPathOf(code: string): string | null {
   const chain = /(?:game\s*\.\s*)?(?:GetService\s*\(\s*"([A-Za-z]+)"\s*\)|(workspace|Workspace|game\s*\.\s*Workspace))((?:\s*[:.]\s*FindFirstChild\s*\(\s*"[^"\\]*"\s*\)|\s*\[\s*"[^"\\]*"\s*\]|\s*\.\s*[A-Za-z_]\w*)*)/.exec(code);
   if (chain === null) return null;
   const root = chain[1] ?? 'Workspace';
-  const rest = [...(chain[3] ?? '').matchAll(/FindFirstChild\s*\(\s*"([^"\\]*)"\s*\)|\[\s*"([^"\\]*)"\s*\]|\.\s*([A-Za-z_]\w*)/g)]
-    .map((match) => match[1] ?? match[2] ?? match[3])
-    .filter((segment): segment is string => typeof segment === 'string' && segment !== '');
+  const rest = segmentsOf(chain[3] ?? '');
   // No trailing segment means the code destroyed a SERVICE or enumerated its children
   // (`workspace:GetChildren()` + Destroy) — neither is a subtree we may recreate.
   if (rest.length === 0) return null;
   return [root, ...rest].join('.');
+}
+
+/** The segment names one `:FindFirstChild(...)`/`[...]`/`.Name` run contributes. */
+function segmentsOf(run: string): string[] {
+  return [...run.matchAll(/FindFirstChild\s*\(\s*"([^"\\]*)"\s*\)|\[\s*"([^"\\]*)"\s*\]|\.\s*([A-Za-z_]\w*)/g)]
+    .map((match) => match[1] ?? match[2] ?? match[3])
+    .filter((segment): segment is string => typeof segment === 'string' && segment !== '');
+}
+
+/**
+ * Resolve every `local <name> = …` chain to a dot path, in order.
+ *
+ * A right-hand side may start at a service (`game:GetService("X")`, `workspace`), at a table of
+ * segments, or at a variable resolved earlier. Anything else — a call that builds an instance, a loop
+ * variable — is skipped rather than guessed, because a guessed path would be restored onto whatever
+ * else lives there.
+ */
+function resolveLocals(code: string): Map<string, string> {
+  const known = new Map<string, string>();
+  for (const match of code.matchAll(/local\s+([A-Za-z_]\w*)\s*=\s*([^\n;]+)/g)) {
+    const name = match[1];
+    const rhs = (match[2] ?? '').trim();
+    if (name === undefined || rhs === '') continue;
+    const table = /^\{(.*?)\}/.exec(rhs);
+    if (table !== null) {
+      const segments = segmentsOf(table[1] ?? '');
+      if (segments.length >= 1) known.set(name, segments.join('.'));
+      continue;
+    }
+    // `ws:FindFirstChild("Part")` / `ws.Part` — extend a variable that is already resolved.
+    const throughVar = /^([A-Za-z_]\w*)((?:\s*[:.]\s*FindFirstChild\s*\(\s*"[^"\\]*"\s*\)|\s*\[\s*"[^"\\]*"\s*\]|\s*\.\s*[A-Za-z_]\w*)*)/.exec(rhs);
+    if (throughVar !== null && known.has(throughVar[1] ?? '')) {
+      const base = known.get(throughVar[1]!);
+      const rest = segmentsOf(throughVar[2] ?? '');
+      if (base !== undefined) known.set(name, [base, ...rest].join('.'));
+      continue;
+    }
+    const service = /^(?:game\s*[.:]\s*)?GetService\s*\(\s*"([A-Za-z]+)"\s*\)((?:\s*[:.]\s*FindFirstChild\s*\(\s*"[^"\\]*"\s*\)|\s*\[\s*"[^"\\]*"\s*\]|\s*\.\s*[A-Za-z_]\w*)*)/.exec(rhs);
+    if (service !== null) {
+      known.set(name, [service[1] ?? 'Workspace', ...segmentsOf(service[2] ?? '')].join('.'));
+      continue;
+    }
+    if (/^(?:workspace|game\s*\.\s*Workspace)\b/.test(rhs)) {
+      known.set(name, ['Workspace', ...segmentsOf(rhs.replace(/^(?:workspace|game\s*\.\s*Workspace)/, ''))].join('.'));
+    }
+  }
+  return known;
 }
 
 /** A snapshot is restorable only when every touched target produced an inverse step. */

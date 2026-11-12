@@ -49,6 +49,11 @@ function record(
     });
 }
 
+function checkpointIdOf(store: CheckpointStore): string {
+    const rows = store.list('s1');
+    return rows[rows.length - 1]!.id;
+}
+
 interface FakeMcpOptions {
     live?: string;
     /** What the live source becomes after a write; defaults to `written`. */
@@ -808,5 +813,112 @@ describe('restore of a RENAMED instance - the snapshot path no longer resolves',
         const restored = await applyRestore(gateway, store, checkpoint.id, undefined, true);
         expect(restored).toEqual({ ok: false, reason: 'NOT_RESTORABLE' });
         expect(gateway.writes).toEqual([]);
+    });
+});
+
+describe('restore of a PivotOffset - an offset on top of the transform', () => {
+    const preMatrix = [1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0];
+    const postMatrix = [1, 0, 0, 0, 0, 0, 1, 0, -1, 0, 3, 4];
+    const marker = (components: number[]) => ({ $cframe: { key: 'PivotOffset' as const, components, position: components.slice(0, 3) } });
+
+    /** `pivot` is what the live instance holds right now; a property write flips it to `afterWrite`. */
+    function pivotGateway(options: { pivot: number[]; afterWrite?: number[]; lie?: boolean }) {
+        let pivot = options.pivot;
+        const writes: string[] = [];
+        const gateway: McpGateway & { writes: typeof writes } = {
+            connected: true,
+            studioLinked: true,
+            server: { source: 'studio-builtin', path: 'C:/mcp.exe', version: '1' },
+            studio: { id: 'place', name: 'P' },
+            toolCount: 2,
+            lastError: null,
+            writes,
+            listTools: async () => ['execute_luau', 'inspect_instance'].map((name) => ({
+                name, description: name, parameters: { type: 'object' },
+            })),
+            callTool: async (name, args) => {
+                const record = (args ?? {}) as Record<string, unknown>;
+                if (name === 'inspect_instance' || typeof record.path === 'string') {
+                    return JSON.stringify({ path: String(record.path ?? ''), properties: { Anchored: true } });
+                }
+                const code = String(record.code ?? '');
+                if (code.includes('pivotComponents')) {
+                    return JSON.stringify({
+                        name: 'Part',
+                        parentPath: 'Workspace',
+                        key: 'CFrame',
+                        components: preMatrix,
+                        pivotComponents: pivot,
+                    });
+                }
+                if (code.includes('attempt(')) {
+                    writes.push(code);
+                    if (options.lie !== true && options.afterWrite !== undefined) pivot = options.afterWrite;
+                    return JSON.stringify({ applied: ['PivotOffset'], failed: [] });
+                }
+                return JSON.stringify({ applied: [], failed: [] });
+            },
+            reconnect: async () => undefined,
+            close: async () => undefined,
+        };
+        return gateway;
+    }
+
+    const snapshot = (): PreStateSnapshot => ({
+        entries: [{
+            kind: 'properties',
+            path: 'Workspace.Part',
+            properties: { CFrame: { $cframe: { key: 'CFrame', components: preMatrix, position: [1, 0, 0] } }, PivotOffset: marker(preMatrix) },
+        }],
+        inverse: [{
+            tool: 'set_properties',
+            path: 'Workspace.Part',
+            properties: { CFrame: { $cframe: { key: 'CFrame', components: preMatrix, position: [1, 0, 0] } }, PivotOffset: marker(preMatrix) },
+        }],
+        notes: [],
+    });
+
+    const postState = (pivot: number[]) => ({
+        entries: [{
+            kind: 'properties' as const,
+            path: 'Workspace.Part',
+            properties: { CFrame: { $cframe: { key: 'CFrame' as const, components: preMatrix, position: [1, 0, 0] } }, PivotOffset: marker(pivot) },
+        }],
+        notes: [],
+        created: [],
+    });
+
+    it('is clean when the live pivot still equals what the turn wrote', async () => {
+        const store = new CheckpointStore(db());
+        record(store, snapshot(), true, postState(postMatrix));
+        const preview = await previewRestore(pivotGateway({ pivot: postMatrix }), store, checkpointIdOf(store), undefined, true);
+        expect(preview.ok).toBe(true);
+        if (!preview.ok) return;
+        expect(preview.preview.drift).toEqual([]);
+    });
+
+    it('refuses when the pivot was nudged by hand after the turn', async () => {
+        const store = new CheckpointStore(db());
+        record(store, snapshot(), true, postState(postMatrix));
+        const hand = [1, 0, 0, 0, 1, 0, 0, 0, 1, 9, 9, 9];
+        const preview = await previewRestore(pivotGateway({ pivot: hand }), store, checkpointIdOf(store), undefined, true);
+        expect(preview.ok).toBe(true);
+        if (!preview.ok) return;
+        expect(preview.preview.drift.join(' ')).toContain('đổi tên, chuyển chỗ hoặc di chuyển tay');
+    });
+
+    it('restores it and verifies the pivot, so a write that did not land is restore-failed', async () => {
+        for (const lie of [false, true]) {
+            const store = new CheckpointStore(db());
+            record(store, snapshot(), true, postState(postMatrix));
+            const restored = await applyRestore(
+                pivotGateway({ pivot: postMatrix, afterWrite: lie ? undefined : preMatrix, lie }),
+                store,
+                checkpointIdOf(store),
+                undefined,
+                true,
+            );
+            expect(restored).toMatchObject({ ok: true, result: { status: lie ? 'restore-failed' : 'restored' } });
+        }
     });
 });

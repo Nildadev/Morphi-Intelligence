@@ -466,3 +466,48 @@ describe('snapshotPostState - a RENAMED instance is found again by its uniqueId'
         expect(post.notes.join(' ')).toContain('Không đọc lại được thuộc tính');
     });
 });
+
+describe('pathFromLuau - the local-variable shape a model writes', () => {
+    it('follows a service into a variable and that variable into a child', () => {
+        const code = [
+            'local ws = game:GetService("Workspace")',
+            'local part = ws:FindFirstChild("MorphiE2EPivot")',
+            'part.PivotOffset = CFrame.new(3, 0, 4)',
+            'return "ok"',
+        ].join('\n');
+        expect(pathFromLuau(code)).toBe('Workspace.MorphiE2EPivot');
+    });
+
+    it('follows a variable into a nested child chain', () => {
+        const code = [
+            'local storage = game:GetService("ReplicatedStorage")',
+            'local folder = storage:FindFirstChild("Assets")',
+            'local part = folder:FindFirstChild("Crate")',
+            'part.Transparency = 0.5',
+        ].join('\n');
+        expect(pathFromLuau(code)).toBe('ReplicatedStorage.Assets.Crate');
+    });
+
+    it('answers null when the code builds SEVERAL instance paths', () => {
+        // Two candidates: restoring either one would be a guess, and a wrong guess overwrites user work.
+        const code = [
+            'local ws = game:GetService("Workspace")',
+            'local a = ws:FindFirstChild("A")',
+            'local b = ws:FindFirstChild("B")',
+            'a.Size = Vector3.new(1, 1, 1)',
+            'b.Size = Vector3.new(2, 2, 2)',
+        ].join('\n');
+        expect(pathFromLuau(code)).toBeNull();
+    });
+
+    it('ignores locals that hold something other than an instance path', () => {
+        const code = [
+            'local ws = game:GetService("Workspace")',
+            'local part = ws:FindFirstChild("Crate")',
+            'local size = Vector3.new(1, 2, 3)',
+            'local count = #ws:GetChildren()',
+            'part.Size = size',
+        ].join('\n');
+        expect(pathFromLuau(code)).toBe('Workspace.Crate');
+    });
+});

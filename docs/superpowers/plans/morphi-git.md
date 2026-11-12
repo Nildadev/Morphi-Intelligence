@@ -334,6 +334,31 @@ its OWN change ("không đọc lại được thuộc tính"). The handle that s
 A path that appeared and turned out to be a MOVED instance is never treated as "created": deleting it
 would destroy exactly what the rename undo is about to put back.
 
+### Undoing a PIVOT OFFSET — an offset measured against the transform
+
+`inspect_instance` reports `PivotOffset` only as the pseudo-paths `PivotOffset.Position` /
+`PivotOffset.Rotation`. They are not members, so writing them back fails and the offset was silently
+un-restorable while the checkpoint claimed `restorable`.
+
+- **MEASURED LIVE**: only a `BasePart` owns `PivotOffset`. A `Model` answers
+  `PivotOffset is not a valid member of Model` — its pivot is the separate `WorldPivot`, which the
+  transform capture already carries.
+- `captureIdentity` therefore reads `PivotOffset` in the SAME round trip (inside a `pcall`, so a
+  Folder/Script/Model simply has none) and stores it as its own `{$cframe}` marker, keyed
+  `PivotOffset`.
+- It is written back as a real `CFrame.new(...)`, and it is applied AFTER the transform: for a Model
+  the offset is measured against the pivot, so the pivot has to be in place first.
+- Drift and the post-write read-back compare it with the live PIVOT, never with the CFrame — the two
+  markers share the `$cframe` shape, and comparing across them would either report every part as
+  drifted or hide a moved pivot behind an unchanged transform.
+
+**A shape the path reader learned live.** A model writes `local ws = game:GetService("Workspace")`
+then `local part = ws:FindFirstChild("Pivot")` far more often than one long chain, and neither of the
+two original shapes matched it — the whole call stayed non-restorable. `pathFromLuau` now resolves
+locals in order (a local may be built from an earlier one) and accepts an answer only when it is
+UNAMBIGUOUS: a local that is a prefix of another counts once (`folder`, `folder.Crate`), while two
+unrelated instances answer `null` — a guessed path would be restored onto whatever else lives there.
+
 ### Undoing an INSERT — the diff of the listing is the record
 
 A turn that creates an instance through Luau (`Instance.new("Part")` + a `Parent` write) carries no
@@ -381,21 +406,20 @@ snapshot now captures the subtree BEFORE the destroy and the inverse is a recrea
 - **A move/insert found by listing needs room in the bound**: 400 nodes / depth 5 for the listing and 200
   nodes / depth 4 for a captured tree. A place bigger than that stays non-restorable with a note instead
   of being restored from a partial view.
-- **`PivotOffset`** (an OFFSET from the pivot, not the pivot itself) is still refused-and-reported. It
-  is a correction applied on top of a transform, and restoring it without the transform it was measured
-  against would move the instance somewhere neither state had it.
+- **A Model's own pivot is `WorldPivot`**: it comes back with the transform, but the *editing* pivot
+  (`PivotOffset`) only exists on a `BasePart`, so there is nothing to restore on a Model.
 
 ## Verification gate (last green run)
 
-- `server tsc --noEmit` clean; `server vitest` **799 passed / 5 skipped** (5 skip = live probe).
+- `server tsc --noEmit` clean; `server vitest` **811 passed / 5 skipped** (5 skip = live probe).
 - `MORPHI_LIVE_STUDIO=1 npx vitest run src/harness/checkpoints/liveProbe.test.ts` → **5/5 passed**
   on real `Place1` (script restore snapshot→mutate→undo→read-back; property restore incl. string
   `CollisionGroup` + `skipped`; Vector3/BrickColor reconstruction restored and re-inspected).
-- `node scripts/e2e-live-undo.mjs` against the live server → **E2E OK, six scenarios**: single call,
-  batch (all-or-nothing), a DELETE the undo rebuilds from the pre-state capture, a MOVE whose position
-  AND rotation come back to the exact recorded matrix, a RENAME + REPARENT undone back to the old name
-  and parent (with a hand reparent afterwards that survives), and an INSERT undone by deleting what the
-  turn created.
+- `node scripts/e2e-live-undo.mjs` against the live server → **E2E OK, seven scenarios (70 checks)**:
+  single call, batch (all-or-nothing), a DELETE the undo rebuilds from the pre-state capture, a MOVE
+  whose position AND rotation come back to the exact recorded matrix, a RENAME + REPARENT undone back
+  to the old name and parent (with a hand reparent afterwards that survives), an INSERT undone by
+  deleting what the turn created, and a PIVOT OFFSET restored to its exact twelve components.
 - `client tsc --noEmit` clean; `client vitest` **631 passed**.
 - `Place1` verified CLEAN after every live run (no leftover probe scripts/instances).
 

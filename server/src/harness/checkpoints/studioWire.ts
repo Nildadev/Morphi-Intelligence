@@ -411,14 +411,14 @@ function isErrorText(result: unknown): boolean {
  * against the bag's `CFrame.Position` string without re-deriving the matrix.
  */
 export interface CapturedCframe {
-  key: 'CFrame' | 'WorldPivot';
+  key: 'CFrame' | 'WorldPivot' | 'PivotOffset';
   components: number[];
   position: number[];
 }
 
 /** Marker that carries a captured CFrame through the property pipeline. */
 export interface CframeValue {
-  $cframe: { key: 'CFrame' | 'WorldPivot'; components: number[]; position: number[] };
+  $cframe: { key: 'CFrame' | 'WorldPivot' | 'PivotOffset'; components: number[]; position: number[] };
 }
 
 /**
@@ -433,6 +433,15 @@ export interface CapturedIdentity {
   /** Dot path of the parent, or null at the DataModel root (a service has no restorable parent). */
   parentPath: string | null;
   cframe: CapturedCframe | null;
+  /**
+   * The `PivotOffset`, when the instance owns one.
+   *
+   * MEASURED LIVE: `inspect_instance` reports it only as the pseudo-paths `PivotOffset.Position` /
+   * `PivotOffset.Rotation`, which are not members — writing them back fails, so it never restored. It
+   * is an OFFSET applied on top of the transform, so it is captured and compared separately from the
+   * transform itself and written back as a real `CFrame`.
+   */
+  pivot: CapturedCframe | null;
 }
 
 /** Marker for a captured name; a JSON string literal is all the restore needs. */
@@ -1000,6 +1009,10 @@ export async function captureIdentity(
     '    info.components = comps(wp)',
     '  end',
     'end',
+    // An offset from the pivot, not the pivot: a Model and a BasePart both own one, a Folder/Script
+    // does not, so a failed read is normal and must not fail the whole capture.
+    'local okPivot, pivot = pcall(function() return root.PivotOffset end)',
+    'if okPivot and typeof(pivot) == "CFrame" then info.pivotComponents = comps(pivot) end',
     'return game:GetService("HttpService"):JSONEncode(info)',
   ].join('\n');
 
@@ -1011,20 +1024,33 @@ export async function captureIdentity(
   } catch {
     return null;
   }
-  const record = (parsed ?? {}) as { name?: unknown; parentPath?: unknown; key?: unknown; components?: unknown };
+  const record = (parsed ?? {}) as {
+    name?: unknown;
+    parentPath?: unknown;
+    key?: unknown;
+    components?: unknown;
+    pivotComponents?: unknown;
+  };
   if (typeof record.name !== 'string') return null;
 
-  let cframe: CapturedCframe | null = null;
   const key = record.key;
-  const components = record.components;
-  if ((key === 'CFrame' || key === 'WorldPivot') && Array.isArray(components) && components.length === 12) {
-    const numbers = components.map((value) => (typeof value === 'number' ? value : Number(value)));
-    if (!numbers.some((value) => !Number.isFinite(value))) {
-      cframe = { key, components: numbers, position: numbers.slice(0, 3) };
-    }
-  }
+  const cframe: CapturedCframe | null =
+    key === 'CFrame' || key === 'WorldPivot' ? componentsOf(record.components, key) : null;
   const parentPath = typeof record.parentPath === 'string' && record.parentPath !== '' ? record.parentPath : null;
-  return { name: record.name, parentPath, cframe };
+  return { name: record.name, parentPath, cframe, pivot: componentsOf(record.pivotComponents, 'PivotOffset') };
+}
+
+/**
+ * A 12-number CFrame component list from the wire, or null.
+ *
+ * Numbers arrive as numbers, but a Studio build that stringifies them must not turn a transform into
+ * NaN — a transform nobody can compare would make every drift check refuse.
+ */
+function componentsOf(value: unknown, key: CapturedCframe['key']): CapturedCframe | null {
+  if (!Array.isArray(value) || value.length !== 12) return null;
+  const numbers = value.map((entry) => (typeof entry === 'number' ? entry : Number(entry)));
+  if (numbers.some((entry) => !Number.isFinite(entry))) return null;
+  return { key, components: numbers, position: numbers.slice(0, 3) };
 }
 
 /** Just the transform, when that is all the caller needs (drift and verification read the identity). */
@@ -1041,7 +1067,16 @@ export function identityMarkers(identity: CapturedIdentity): Record<string, unkn
   const markers: Record<string, unknown> = { Name: { $name: identity.name } };
   if (identity.parentPath !== null) markers.Parent = { $parent: identity.parentPath };
   if (identity.cframe !== null) markers[identity.cframe.key] = cframeMarker(identity.cframe);
+  // AFTER the transform: for a Model the pivot offset is measured against the pivot, so the pivot has
+  // to be in place first or the offset lands somewhere neither state had.
+  if (identity.pivot !== null) markers[identity.pivot.key] = cframeMarker(identity.pivot);
   return markers;
+}
+
+/** Compare a stored `PivotOffset` marker with a freshly captured one. */
+export function samePivot(marker: unknown, live: CapturedIdentity | null): boolean {
+  if (!isCframeValue(marker)) return true;
+  return sameCframe(marker, live?.pivot ?? null);
 }
 
 /** Compare stored identity markers with a freshly captured identity (tolerance only for the transform). */

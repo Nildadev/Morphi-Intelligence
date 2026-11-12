@@ -44,6 +44,10 @@ export const FAKE_SCRIPTS = [
   // from diffing the workspace listing before/after. Scenario 6 of the live e2e. (Named `created`
   // because `studio-insert` already exists below as the approval demo.)
   'studio-created',
+  // Pivot probe: rotates a Model's PivotOffset through `execute_luau`. The bag reports the offset only
+  // as the pseudo-paths `PivotOffset.Position`/`.Rotation`, which are not members, so the snapshot has
+  // to capture the real CFrame and the undo has to write it back as one. Scenario 7 of the live e2e.
+  'studio-pivot',
   // Design tour: one turn that calls every row shape the transcript can render (read, search,
   // command, edit, create, multi-edit, failure), so the whole log styling can be inspected in a
   // single screen without a Roblox Studio connection.
@@ -321,6 +325,28 @@ async function* fakeStream(request: LlmRequest, fallback: FakeScript, slowDelay:
       return;
     }
     yield { type: 'text_delta', text: 'Đã đổi tên và chuyển MorphiE2EPart vào MorphiE2EFolder.' };
+    yield { type: 'finish', reason: 'stop' };
+    return;
+  }
+
+  if (script === 'studio-pivot') {
+    const callId = 'fake_pivot_1';
+    if (!answered.has(callId)) {
+      const code = 'local ws = game:GetService("Workspace")\n'
+        + 'local model = ws:FindFirstChild("MorphiE2EPivot")\n'
+        + 'if model == nil then return "error: no model" end\n'
+        + 'model.PivotOffset = CFrame.new(3, 0, 4) * CFrame.Angles(0, math.rad(90), 0)\n'
+        + 'return "ok"';
+      const args = { code, datamodel_type: 'Edit' };
+      yield { type: 'tool_call_start', callId, name: 'studio.execute_luau' };
+      if (signal.aborted) return;
+      yield { type: 'tool_call_delta', callId, argsDelta: JSON.stringify(args) };
+      if (signal.aborted) return;
+      yield { type: 'tool_call_end', callId, name: 'studio.execute_luau', args };
+      yield { type: 'finish', reason: 'tool_calls' };
+      return;
+    }
+    yield { type: 'text_delta', text: 'Đã xoay PivotOffset của MorphiE2EPivot.' };
     yield { type: 'finish', reason: 'stop' };
     return;
   }

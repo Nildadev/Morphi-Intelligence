@@ -4,8 +4,10 @@ import {
   captureCframe,
   captureIdentity,
   captureInstanceTree,
+  cframeMarker,
   deleteInstance,
   inspectInstance,
+  identityMarkers,
   instanceExists,
   listInstancePaths,
   propertiesFrom,
@@ -15,6 +17,7 @@ import {
   restorableProperties,
   sameCframe,
   sameIdentity,
+  samePivot,
   scriptSourceFrom,
   setInstanceProperties,
   uniqueIdFrom,
@@ -599,7 +602,7 @@ describe('captureCframe / reconstructValue - the transform', () => {
     const mcp = rawGateway({ execute_luau: () => JSON.stringify({ name: 'Main', parentPath: 'ServerScriptService' }) });
     expect(await captureCframe(mcp, 'ServerScriptService.Main')).toBeNull();
     expect(await captureIdentity(mcp, 'ServerScriptService.Main')).toEqual({
-      name: 'Main', parentPath: 'ServerScriptService', cframe: null,
+      name: 'Main', parentPath: 'ServerScriptService', cframe: null, pivot: null,
     });
   });
 
@@ -706,5 +709,50 @@ describe('uniqueIdFrom - the stable handle a rename cannot change', () => {
     for (const reply of [null, 'error: not found', 'not json', JSON.stringify({ properties: {} })]) {
       expect(uniqueIdFrom(reply)).toBeNull();
     }
+  });
+});
+
+describe('PivotOffset - an offset measured against the transform', () => {
+  const components = [1, 0, 0, 1, 0, 0, 0, 1, 0, 2, 3, 4];
+
+  it('captures it in the same identity round trip as a real CFrame', async () => {
+    const mcp = rawGateway({
+      execute_luau: () => JSON.stringify({
+        name: 'Model', parentPath: 'Workspace', key: 'WorldPivot', components, pivotComponents: components,
+      }),
+    });
+    const identity = await captureIdentity(mcp, 'Workspace.Model');
+    expect(identity?.pivot).toEqual({ key: 'PivotOffset', components, position: [1, 0, 0] });
+  });
+
+  it('leaves it out for an instance that owns none, instead of inventing the member', async () => {
+    const mcp = rawGateway({
+      execute_luau: () => JSON.stringify({ name: 'Folder', parentPath: 'Workspace', pivotComponents: 'nope' }),
+    });
+    expect((await captureIdentity(mcp, 'Workspace.Folder'))?.pivot).toBeNull();
+  });
+
+  it('writes it AFTER the transform, because a Model offset is measured against the pivot', () => {
+    const markers = identityMarkers({
+      name: 'Model',
+      parentPath: 'Workspace',
+      cframe: { key: 'WorldPivot', components, position: [1, 0, 0] },
+      pivot: { key: 'PivotOffset', components, position: [1, 0, 0] },
+    });
+    expect(Object.keys(markers)).toEqual(['Name', 'Parent', 'WorldPivot', 'PivotOffset']);
+  });
+
+  it('reconstructs it as a real CFrame, never as the pseudo-paths the bag reports', () => {
+    const marker = cframeMarker({ key: 'PivotOffset', components, position: [1, 0, 0] });
+    expect(reconstructValue(marker, 'PivotOffset')).toContain('CFrame.new(');
+    expect(reconstructValue(marker, 'PivotOffset')).toContain('2, 3, 4');
+  });
+
+  it('compares it with the PIVOT, never with the transform', () => {
+    const marker = cframeMarker({ key: 'PivotOffset', components, position: [1, 0, 0] });
+    const moved = [1, 0, 0, 0, 0, 0, 1, 0, -1, 0, 5, 6];
+    expect(samePivot(marker, { name: 'M', parentPath: 'W', cframe: { key: 'CFrame', components, position: [1, 0, 0] }, pivot: { key: 'PivotOffset', components: moved, position: [0, 5, 6] } })).toBe(false);
+    expect(samePivot(marker, { name: 'M', parentPath: 'W', cframe: null, pivot: { key: 'PivotOffset', components, position: [1, 0, 0] } })).toBe(true);
+    expect(samePivot(marker, null)).toBe(false);
   });
 });
