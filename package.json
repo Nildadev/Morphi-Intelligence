@@ -19,7 +19,7 @@
     "test": "npm run test:server && npm run test:client",
     "test:server": "npm --prefix server test",
     "test:client": "npm --prefix client test",
-    "test:main": "node --test main/backend.test.js main/credentials.test.js",
+    "test:main": "node --test main/",
     "e2e": "npm --prefix client run e2e",
     "typecheck": "npm --prefix server run typecheck && npm --prefix server run typecheck:tests && npm --prefix client run build",
     "lint": "npm --prefix client run lint",
