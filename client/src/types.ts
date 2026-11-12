@@ -132,7 +132,8 @@ export type DerivedStep =
 export type TurnTimelineEntry =
   | { type: 'thinking'; text: string; key: string }
   | { type: 'text'; text: string; key: string }
-  | { type: 'call'; step: Extract<DerivedStep, { type: 'call' }>; key: string };
+  /** `denied` carries the user's refusal: the call fails by decision, not by its own error. */
+  | { type: 'call'; step: Extract<DerivedStep, { type: 'call' }>; key: string; denied?: boolean };
 
 /** One piece in the order the provider streamed it (server event sequence); `call` resolves by id. */
 export type AssistantActivity =

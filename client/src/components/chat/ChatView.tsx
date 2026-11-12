@@ -72,6 +72,11 @@ function aggregateTurnActivity(rows: DerivedMessage[]): TurnActivity {
         for (const step of row.steps) {
             if (step.type === 'call') callsById.set(step.call.callId, step);
         }
+        // Where the decision lives: an approval step is not painted anywhere, so this is the only
+        // record that a failed call was refused by the user rather than broken.
+        const deniedIds = new Set(
+            row.steps.flatMap((step) => (step.type === 'approval' && step.approval.decision === 'deny' ? [step.approval.callId] : [])),
+        );
 
         if (row.activity !== undefined) {
             // New turns carry the exact streamed order; no milestone is assumed. The final
@@ -89,7 +94,12 @@ function aggregateTurnActivity(rows: DerivedMessage[]): TurnActivity {
                 if (step !== undefined) {
                     calls.push(step);
                     totalMs += step.call.durationMs ?? 0;
-                    entries.push({ type: 'call', step, key: `call-${rowIndex}-${activityIndex}-${step.call.callId}` });
+                    entries.push({
+                        type: 'call',
+                        step,
+                        key: `call-${rowIndex}-${activityIndex}-${step.call.callId}`,
+                        ...(deniedIds.has(step.call.callId) ? { denied: true } : {}),
+                    });
                 }
             });
             return;
@@ -105,7 +115,12 @@ function aggregateTurnActivity(rows: DerivedMessage[]): TurnActivity {
             if (step.type !== 'call') continue;
             calls.push(step);
             totalMs += step.call.durationMs ?? 0;
-            entries.push({ type: 'call', step, key: `call-${rowIndex}-${step.call.callId}` });
+            entries.push({
+                type: 'call',
+                step,
+                key: `call-${rowIndex}-${step.call.callId}`,
+                ...(deniedIds.has(step.call.callId) ? { denied: true } : {}),
+            });
         }
     });
     return { entries, calls, totalMs };

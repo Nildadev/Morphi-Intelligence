@@ -171,6 +171,11 @@ export function MessageItem({ message, toolProgress, isStreaming = false, onRege
     // What the turn actually changed, not just how long it took. Computed from the same calls
     // the activity block lists, so the two can never disagree about which tools ran.
     const turnChanges = summarizeTurnChanges(activityCalls.map((step) => step.call));
+    // A refusal is a decision the user made, not a tool failure: the row has to say which one it was,
+    // and the approval steps that carry the decision are deliberately not drawn anywhere else.
+    const deniedCallIds = new Set(
+        message.steps.flatMap((step) => (step.type === 'approval' && step.approval.decision === 'deny' ? [step.approval.callId] : [])),
+    );
 
     return (
         <article className="group flex w-full flex-col py-1.5">
@@ -206,6 +211,7 @@ export function MessageItem({ message, toolProgress, isStreaming = false, onRege
                                             key={entry.key}
                                             call={entry.step.call}
                                             progress={toolProgress?.[entry.step.call.callId]}
+                                            denied={entry.denied === true || deniedCallIds.has(entry.step.call.callId)}
                                         />
                                     );
                                 })
@@ -217,6 +223,7 @@ export function MessageItem({ message, toolProgress, isStreaming = false, onRege
                                             key={`call-${step.call.callId}-${index}`}
                                             call={step.call}
                                             progress={toolProgress?.[step.call.callId]}
+                                            denied={deniedCallIds.has(step.call.callId)}
                                         />
                                     ))}
                                 </>

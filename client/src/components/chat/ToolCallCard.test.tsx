@@ -25,6 +25,18 @@ describe('ToolCallCard', () => {
         expect(screen.getByText(label)).toBeInTheDocument();
     });
 
+    it('reports a refused call as the decision the user made, not as a tool failure', () => {
+        render(<ToolCallCard call={call({ status: 'error', result: 'Người dùng từ chối.' })} denied />);
+        expect(screen.getByText('Đã từ chối')).toBeInTheDocument();
+        expect(screen.queryByText('Lỗi')).toBeNull();
+    });
+
+    it('keeps "Lỗi" for a call that failed on its own', () => {
+        render(<ToolCallCard call={call({ status: 'error', result: 'boom' })} />);
+        expect(screen.getByText('Lỗi')).toBeInTheDocument();
+        expect(screen.queryByText('Đã từ chối')).toBeNull();
+    });
+
     it('says nothing on a settled row: "Hoàn tất" on every call was noise', () => {
         render(<ToolCallCard call={call({ status: 'done' })} />);
         expect(screen.queryByText('Hoàn tất')).toBeNull();

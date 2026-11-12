@@ -80,7 +80,7 @@ function primaryArgSummary(args: unknown): string | undefined {
  * script. The end-of-message summary only lists the changed script paths, so the diff is painted
  * exactly once, here, on the call that produced it.
  */
-function EditCallCard({ call }: { call: DerivedToolCall }) {
+function EditCallCard({ call, denied }: { call: DerivedToolCall; denied: boolean }) {
     const [expanded, setExpanded] = useState(false);
     const studioName = call.name.startsWith('studio.') ? call.name.slice('studio.'.length) : call.name;
     const Icon = TOOL_ICONS[call.name] ?? STUDIO_ICONS[studioName] ?? FileText;
@@ -130,8 +130,8 @@ function EditCallCard({ call }: { call: DerivedToolCall }) {
                 {/* A settled call says nothing: "Hoàn tất" on every row is noise the user asked to
                   * remove. Only a non-terminal state (running) or a failure earns a word. */}
                 {call.status !== 'done' ? (
-                    <span className={cn('shrink-0 text-ui-sm font-semibold', STATUS_CLASS[call.status])}>
-                        {statusLabel(call.status)}
+                    <span className={cn('shrink-0 text-ui-sm font-semibold', denied ? 'text-text-tertiary' : STATUS_CLASS[call.status])}>
+                        {denied && call.status === 'error' ? vi.chat.approvalDenied : statusLabel(call.status)}
                     </span>
                 ) : null}
             </button>
@@ -282,9 +282,14 @@ export interface ToolCallCardProps {
     approval?: DerivedApproval;
     /** Last live line for this `callId`, only rendered while the call is still running (Ruling 9). */
     progress?: string;
+    /**
+     * The user answered "deny" for this call. The server reports the refusal as a failed call, and
+     * "Lỗi" would blame the tool for a decision the user made themselves — the row says so instead.
+     */
+    denied?: boolean;
 }
 
-export function ToolCallCard({ call, approval, progress }: ToolCallCardProps) {
+export function ToolCallCard({ call, approval, progress, denied = false }: ToolCallCardProps) {
     if (approval !== undefined) {
         const Icon = approval.risk === 'high' ? ShieldAlert : ShieldCheck;
         return (
@@ -314,7 +319,7 @@ export function ToolCallCard({ call, approval, progress }: ToolCallCardProps) {
     // plain list of changed script paths. Expanding this row shows the hunks (one section per
     // script for `multi_edit`); the row itself stays a one-liner.
     if (EDIT_TOOL_NAMES.has(call.name)) {
-        return <EditCallCard call={call} />;
+        return <EditCallCard call={call} denied={denied} />;
     }
 
     return (
@@ -324,9 +329,9 @@ export function ToolCallCard({ call, approval, progress }: ToolCallCardProps) {
             subtitle={call.name}
             argument={primaryArgSummary(call.args)}
             activity={liveProgress}
-            statusLabel={statusLabel(call.status)}
-            statusClass={STATUS_CLASS[call.status]}
-            failed={call.status === 'error'}
+            statusLabel={denied && call.status === 'error' ? vi.chat.approvalDenied : statusLabel(call.status)}
+            statusClass={denied ? 'text-text-tertiary' : STATUS_CLASS[call.status]}
+            failed={call.status === 'error' && !denied}
             settled={call.status === 'done'}
         >
             <JsonBlock label={vi.chat.args} value={call.args} />

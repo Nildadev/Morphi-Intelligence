@@ -181,6 +181,30 @@ describe('ChatView', () => {
         expect(screen.getAllByText((_, node) => node?.textContent === 'Suy nghĩ trước tool').length).toBeGreaterThan(0);
     });
 
+    it('marks a refused call as the user decision, not as a tool error', () => {
+        // The approval step itself is never painted; the refused call has to carry the decision to
+        // the worked block, otherwise a refused call reads "Lỗi" (the tool broke) instead of "Đã từ chối".
+        const user: DerivedMessage = { id: 'u1', role: 'user', content: 'Làm giúp', steps: [], createdAt: 1, superseded: false };
+        const toolRow: DerivedMessage = {
+            id: 'a1', role: 'assistant', content: '',
+            steps: [
+                { type: 'call', call: { callId: 'c1', name: 'search_objects', args: {}, status: 'error', result: 'Người dùng từ chối.' } },
+                { type: 'approval', approval: { approvalId: 'ap1', callId: 'c1', name: 'search_objects', args: {}, risk: 'low', decision: 'deny' } },
+            ],
+            createdAt: 2, superseded: false,
+        };
+        const conclusion: DerivedMessage = {
+            id: 'a2', role: 'assistant', content: 'Kết luận',
+            steps: [{ type: 'text', content: 'Kết luận' }],
+            createdAt: 3, superseded: false,
+        };
+
+        render(<ChatView {...props} messages={[user, toolRow, conclusion]} />);
+        fireEvent.click(screen.getByRole('button', { name: /Đã làm trong/ }));
+        expect(screen.getByText('Đã từ chối')).toBeInTheDocument();
+        expect(screen.queryByText('Lỗi')).toBeNull();
+    });
+
     it('keeps a single working header while the turn is live instead of splitting per step', () => {
         const user: DerivedMessage = { id: 'u1', role: 'user', content: 'Làm giúp', steps: [], createdAt: 1, superseded: false };
         const toolRow: DerivedMessage = {

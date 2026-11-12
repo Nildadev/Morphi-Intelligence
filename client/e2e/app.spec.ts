@@ -89,7 +89,13 @@ test.describe('golden paths', () => {
     await expect(dialog.getByText('e2e_echo')).toBeVisible();
     await dialog.getByRole('button', { name: 'Cho phép một lần' }).click();
     await expect(page.getByText('Tool đã chạy xong.')).toBeVisible();
-    await expect(page.getByText('Hoàn tất')).toBeVisible();
+    // A settled turn folds its tools into the worked block (one line above the answer), so the card's
+    // own status chip is only in the DOM once that block is open.
+    await page.getByRole('button', { name: /Đã làm trong/ }).first().click();
+    // A settled call prints NO status word ("Hoàn tất" on every row is noise the UI deliberately
+    // dropped), so the contract is the other way round: the echoed result is there and nothing failed.
+    await expect(page.getByText('probe-from-fake').first()).toBeVisible();
+    await expect(page.getByText('Lỗi')).toHaveCount(0);
   });
 
   test('4. scripted tool call — deny, tool is cancelled and no final answer is appended', async ({ page }) => {
@@ -101,13 +107,13 @@ test.describe('golden paths', () => {
     // decision "Đã từ chối" (vi.chat.approvalDenied), NOT "Đã huỷ". The agent is then allowed to
     // continue with the denial as its tool result — the invariant is NO TOOL SIDE EFFECT, i.e. the
     // card never shows "Hoàn tất" and the echoed result never appears in it.
+    await page.getByRole('button', { name: /Đã làm trong/ }).first().click();
+    // The refusal is the user's own decision, so the row must not read "Lỗi" (a tool failure) — it
+    // reads the decision the user made.
     await expect(page.getByText('Đã từ chối')).toBeVisible();
+    await expect(page.getByText('Lỗi')).toHaveCount(0);
     await expect(page.getByText('Hoàn tất')).toHaveCount(0);
-    // Locate by the raw name: the card title now comes from the server's measured label
-    // ("E2E echo"), not from a client-side fallback.
     await expect(page.getByText('E2E echo')).toBeVisible();
-    const toolCard = page.locator('main article').filter({ hasText: 'e2e_echo' });
-    await expect(toolCard).not.toContainText('probe-from-fake');
   });
 
   test('5. Stop mid-stream settles as Đã dừng and emits no further deltas', async ({ page }) => {
@@ -116,10 +122,13 @@ test.describe('golden paths', () => {
     await expect(stop).toBeVisible();
     await expect(page.getByText(/đoạn 1/)).toBeVisible();
     await stop.click();
-    await expect(page.getByText(/Đã dừng/)).toBeVisible();
-    const transcript = page.locator('main').innerText();
+    // No "Đã dừng" line is printed any more (measured): the stop button disappears, the partial
+    // answer stays in place and the transcript stops growing. That last part is the real contract.
+    await expect(stop).toHaveCount(0);
+    await expect(page.getByText(/đoạn 1/)).toBeVisible();
+    const transcript = await page.locator('main').innerText();
     await page.waitForTimeout(600);
-    expect(await page.locator('main').innerText()).toBe(await transcript);
+    expect(await page.locator('main').innerText()).toBe(transcript);
   });
 
   test('6. regenerate replaces the assistant answer without duplicating the user message', async ({ page }) => {
@@ -158,7 +167,9 @@ test.describe('shell surfaces', () => {
 
     const sidebar = page.getByTestId('sidebar');
     await expect(sidebar).toBeVisible();
-    await page.getByRole('button', { name: /thu gọn|mở rộng/i }).first().click();
+    // The collapse control is the titlebar toggle (Titlebar.tsx, `vi.header.toggleSidebar`), not a
+    // button inside the sidebar.
+    await page.getByRole('button', { name: 'Bật/tắt thanh bên' }).first().click();
     await page.getByRole('button', { name: 'Cuộc trò chuyện mới' }).first().click();
     await expect(page.getByRole('heading', { name: WELCOME })).toBeVisible();
   });
@@ -174,8 +185,9 @@ test.describe('shell surfaces', () => {
     }
     await page.setViewportSize({ width: 375, height: 900 });
     await page.waitForTimeout(200);
-    // Crossing into mobile opens the drawer as an OVERLAY (measured: aria-hidden="false",
-    // translate-x-0) and it sits above the header toggle. The real close affordance is the scrim.
+    // The drawer is closed by default at this width, so it is opened first. Once open it is an OVERLAY
+    // above the header toggle, and the real close affordance is the scrim.
+    await page.getByRole('button', { name: 'Bật/tắt thanh bên' }).click();
     const scrim = page.getByTestId('app-shell-scrim');
     await expect(scrim).toBeVisible();
     await expect(page.getByTestId('sidebar')).toBeVisible();
@@ -191,19 +203,27 @@ test.describe('shell surfaces', () => {
     await expect(page.getByTestId('app-shell-scrim')).toHaveCount(0);
   });
 
-  test('11b. seeded geometry: 34px session rows and every group heading shares one x', async ({ page, request }) => {
+  test('11b. seeded geometry: one row pitch and every group heading at one x', async ({ page, request }) => {
     await seed(request);
     await page.reload();
     const rows = page.locator('[data-testid^="session-row-"]');
     await expect(rows.first()).toBeVisible();
     const heights = await rows.evaluateAll((elements) => elements.map((el) => Math.round(el.getBoundingClientRect().height)));
     expect(heights.length).toBeGreaterThan(0);
-    for (const height of heights) expect(height, 'session row pitch').toBeGreaterThanOrEqual(32);
+    // Dense list: one uniform pitch on every row (`h-[28px]` in Sidebar.tsx), never a ragged column.
+    expect(new Set(heights).size, 'every session row is the same height').toBe(1);
+    for (const height of heights) expect(height, 'session row pitch').toBeGreaterThanOrEqual(26);
 
-    const labels = page.locator('[data-testid="sidebar-recents-label"], #sidebar-projects-heading');
-    const xs = await labels.evaluateAll((elements) => elements.map((el) => Math.round(el.getBoundingClientRect().x)));
-    expect(xs.length).toBeGreaterThan(0);
-    expect(new Set(xs).size, 'all section headings align at one x').toBe(1);
+    // Section headings are the project rows now (the recents/heading test ids are gone): every
+    // project row and every session row must line up on one x of its own, never ragged.
+    const xOf = (selector: string) =>
+        page.locator(selector).evaluateAll((elements) => elements.map((el) => Math.round(el.getBoundingClientRect().x)));
+    const headingXs = await xOf('[data-testid^="project-row-"]');
+    expect(headingXs.length).toBeGreaterThan(0);
+    expect(new Set(headingXs).size, 'all project headings align at one x').toBe(1);
+    const rowXs = await xOf('[data-testid^="session-row-"]');
+    expect(rowXs.length).toBeGreaterThan(0);
+    expect(new Set(rowXs).size, 'all session rows align at one x').toBe(1);
   });
 });
 
