@@ -415,7 +415,13 @@ snapshot now captures the subtree BEFORE the destroy and the inverse is a recrea
   type-checked for the first time: 78 fixture errors were hiding behind untyped mocks, e.g. a
   `PostStateSnapshot` fixture without `created` and `McpGateway` stubs without `close`).
 - `server vitest` **820 passed / 5 skipped** (5 skip = live probe).
-- `MORPHI_LIVE_STUDIO=1 npx vitest run src/harness/checkpoints/liveProbe.test.ts` → **5/5 passed**
+- `MORPHI_LIVE_STUDIO=1 npx vitest run src/harness/checkpoints/liveProbe.test.ts` → **5/5 passed**. The
+  probe now waits for Studio to publish a session to the MCP proxy (polling `inspect_instance` on
+  `Workspace`, up to 20s) instead of assuming it is there: MEASURED, a fresh client right after a Studio
+  restart answered `No Roblox Studio instances are connected` for ~3s while `tools/list` still answered
+  from Roblox's `tools-cache.json`, so the old probe failed 1/5-4/5 depending on whether another client had
+  already warmed the proxy. `execute_luau` cannot be the probe: on a live session it answers
+  `datamodel_type is required` unless every call passes `datamodel_type: 'Edit'`.
   on real `Place1` (script restore snapshot→mutate→undo→read-back; property restore incl. string
   `CollisionGroup` + `skipped`; Vector3/BrickColor reconstruction restored and re-inspected).
 - `node scripts/e2e-live-undo.mjs` against the live server → **E2E OK, seven scenarios (70 checks)**:

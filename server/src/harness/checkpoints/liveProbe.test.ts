@@ -123,6 +123,28 @@ describe.skipIf(!gated)('live Studio wire (MORPHI_LIVE_STUDIO=1)', () => {
       reconnect: async () => undefined,
       close: async () => undefined,
     };
+    // Studio publishes a session to the proxy only after the client has been connected for a moment, and
+    // `tools/list` answers from Roblox's cached listing whether or not a studio is there. Without this wait
+    // the first real call can race that publication and fail with "No Roblox Studio instances are
+    // connected" (MEASURED: the same file passes 5/5 while another long-lived client holds the session, and
+    // fails 1/5 when the probe is the first client after a Studio restart). Poll a trivial call instead of
+    // sleeping a fixed time.
+    const deadline = Date.now() + 20000;
+    for (;;) {
+      try {
+        // `inspect_instance` needs no arguments a session could reject, so a failure here is about the
+        // session itself. (`execute_luau` is not usable for this: it answers `datamodel_type is required`
+        // on a live session too, which says nothing about whether Studio is attached.)
+        await gateway.callTool('inspect_instance', { path: 'Workspace' });
+        break;
+      } catch (error) {
+        if (Date.now() > deadline) {
+          live.close();
+          throw new Error(`Studio never published a session to the MCP proxy within 20s: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    }
     return { gateway, live, tools };
   }
 
