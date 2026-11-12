@@ -13,6 +13,7 @@ describe('errorCopy', () => {
     });
 
     it.each([
+        'INVALID_JSON', 'PAYLOAD_TOO_LARGE', 'UNSUPPORTED_ENCODING', 'REQUEST_ABORTED', 'BAD_REQUEST',
         'VALIDATION_ERROR', 'SESSION_BUSY', 'MESSAGE_NOT_FOUND', 'SESSION_NOT_FOUND', 'PROJECT_NOT_FOUND',
         'NO_PROVIDER', 'UNAUTHORIZED', 'NOT_FOUND', 'INTERNAL_ERROR',
     ])('covers the route-level code %s', (code) => {

@@ -25,6 +25,13 @@ export const ERROR_COPY: Record<string, string> = {
     PROJECT_NOT_FOUND: 'Project này không còn tồn tại trên server.',
     VALIDATION_ERROR: 'Yêu cầu không hợp lệ.',
     INTERNAL_ERROR: 'Server harness gặp lỗi nội bộ.',
+    // Raised by `server/src/http/errors.ts` before any route runs: the body arrived but could not be read.
+    // Without a line here a client bug (a payload built from a stale shape) surfaced as `Lỗi INVALID_JSON.`
+    INVALID_JSON: 'Dữ liệu gửi lên không phải JSON hợp lệ.',
+    PAYLOAD_TOO_LARGE: 'Dữ liệu gửi lên quá lớn.',
+    UNSUPPORTED_ENCODING: 'Định dạng dữ liệu gửi lên không được hỗ trợ.',
+    REQUEST_ABORTED: 'Yêu cầu đã bị huỷ trước khi server đọc xong.',
+    BAD_REQUEST: 'Yêu cầu không hợp lệ.',
     TRANSPORT_ERROR: 'Không kết nối được tới server harness. Hãy chạy `npm run dev` ở thư mục server.',
     // Ruling P20-5: năm code này tập trung trong `vi.errors`, không còn rơi vào fallback `Lỗi <code>.`.
     ...vi.errors,
