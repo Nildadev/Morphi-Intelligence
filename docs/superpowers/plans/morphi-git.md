@@ -318,6 +318,38 @@ Drift compares the identity as well as the scalars, with the same three cases: w
 re-captures the identity after the write, so a rename that reported "applied" but did not land is
 `restore-failed`.
 
+**The path itself moves, so the post-state has to follow it.** After the turn renames or reparents an
+instance, the snapshot path stops resolving — and MEASURED LIVE, that made the undo of a rename refuse
+its OWN change ("không đọc lại được thuộc tính"). The handle that survives a rename is the Studio
+`uniqueId` the server reports at the top level of `inspect_instance` (it cannot be read from Luau:
+`lacking capability RobloxScript`). So:
+
+- the snapshot stores `uniqueId` next to the property bag;
+- after the call, the same roots are listed again and the paths that APPEARED are inspected until one
+  carries that `uniqueId` — a match is proof of identity, not a guess about names;
+- the post-state entry is recorded at the new path with `fromPath` naming the old one;
+- drift reads and the inverse step write at the CURRENT path (`redirectStep`), and the post-write
+  read-back looks at `parent + "." + name` from the restored markers — where the instance lands back.
+
+A path that appeared and turned out to be a MOVED instance is never treated as "created": deleting it
+would destroy exactly what the rename undo is about to put back.
+
+### Undoing an INSERT — the diff of the listing is the record
+
+A turn that creates an instance through Luau (`Instance.new("Part")` + a `Parent` write) carries no
+path in its args, so there was nothing to snapshot and the undo left the new instance in place while
+reporting the turn restored.
+
+The inverse of "the turn made this" is a delete, and the only honest way to find the target is to look:
+`listInstancePaths` walks the services the code names (plus Workspace) in ONE Luau round trip before
+the call, the post-state walks them again, and every path that appeared becomes an `inserted` entry.
+
+- A TRUNCATED listing is discarded (`null`), never diffed: the paths a cut-off walk missed would read
+  as newly created and the undo would DELETE user work. The call then stays non-restorable with a note.
+- A path that appeared because an instance MOVED into it is excluded (see the rename section).
+- `delete_instance` re-probes first: an instance the user already removed is a no-op, while a FAILED
+  probe is not "already gone" and is reported as a failure.
+
 ### Undoing a DELETE — the instance is rebuilt, not just reported
 
 A delete used to make a whole turn non-restorable: there is nothing left to read afterwards. The
@@ -346,19 +378,24 @@ snapshot now captures the subtree BEFORE the destroy and the inverse is a recrea
   come back (proved live: `Material`, `Anchored`, `Color`, `Size`, `Transparency` all exact), but
   children of a refused class cannot be rebuilt, and a duplicate child name resolves to the first match
   on the path the recreate uses.
+- **A move/insert found by listing needs room in the bound**: 400 nodes / depth 5 for the listing and 200
+  nodes / depth 4 for a captured tree. A place bigger than that stays non-restorable with a note instead
+  of being restored from a partial view.
 - **`PivotOffset`** (an OFFSET from the pivot, not the pivot itself) is still refused-and-reported. It
   is a correction applied on top of a transform, and restoring it without the transform it was measured
   against would move the instance somewhere neither state had it.
 
 ## Verification gate (last green run)
 
-- `server tsc --noEmit` clean; `server vitest` **776 passed / 5 skipped** (5 skip = live probe).
+- `server tsc --noEmit` clean; `server vitest` **799 passed / 5 skipped** (5 skip = live probe).
 - `MORPHI_LIVE_STUDIO=1 npx vitest run src/harness/checkpoints/liveProbe.test.ts` → **5/5 passed**
   on real `Place1` (script restore snapshot→mutate→undo→read-back; property restore incl. string
   `CollisionGroup` + `skipped`; Vector3/BrickColor reconstruction restored and re-inspected).
-- `node scripts/e2e-live-undo.mjs` against the live server → **E2E OK, four scenarios**: single call,
-  batch (all-or-nothing), a DELETE the undo rebuilds from the pre-state capture, and a MOVE whose
-  position AND rotation come back to the exact recorded matrix.
+- `node scripts/e2e-live-undo.mjs` against the live server → **E2E OK, six scenarios**: single call,
+  batch (all-or-nothing), a DELETE the undo rebuilds from the pre-state capture, a MOVE whose position
+  AND rotation come back to the exact recorded matrix, a RENAME + REPARENT undone back to the old name
+  and parent (with a hand reparent afterwards that survives), and an INSERT undone by deleting what the
+  turn created.
 - `client tsc --noEmit` clean; `client vitest` **631 passed**.
 - `Place1` verified CLEAN after every live run (no leftover probe scripts/instances).
 

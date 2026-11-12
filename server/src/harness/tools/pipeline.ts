@@ -374,14 +374,24 @@ export class ToolPipeline {
     // store failure must not turn a successful tool call into an error.
     if (snapshotted) {
       try {
-        const restorable = preState !== null && isRestorable(preState);
         // Phase 5: re-read the targets now that the call landed. `restore` compares the LIVE content
         // with this, so a hand edit made after the turn is refused instead of being overwritten —
-        // without it the post-turn content is indistinguishable from a later edit. Only worth a
-        // round trip when an inverse exists at all; best-effort, never throws.
-        const postState = restorable && preState !== null
+        // without it the post-turn content is indistinguishable from a later edit. Needed even when
+        // no inverse exists yet: a Luau snippet that creates instances has no path in its args, so its
+        // inverse only exists BECAUSE the post-state is re-listed (see `insertScan`).
+        const postState = preState !== null
+          && (isRestorable(preState) || preState.insertScan !== undefined)
           ? await snapshotPostState(context.mcp, preState, context.signal)
           : null;
+        // Creations found by the diff become ordinary `inserted` entries: the inverse of "the turn
+        // made this" is "delete this", and the restore already knows how to apply that.
+        if (preState !== null && postState !== null) {
+          for (const path of postState.created) {
+            preState.entries.push({ kind: 'inserted', path });
+            preState.inverse.push({ tool: 'delete_instance', path });
+          }
+        }
+        const restorable = preState !== null && isRestorable(preState);
         this.checkpoints!.record({
           sessionId: context.sessionId,
           label: `${tool.presentation.label} · ${tool.name}`,
@@ -399,7 +409,9 @@ export class ToolPipeline {
             restoreReason: restorable
               ? 'Đã chụp trạng thái trước khi sửa — có thể khôi phục.'
               : (preState?.notes[0]
-                ?? 'Chưa chụp được snapshot trước khi sửa — không có inverse rõ ràng để khôi phục an toàn.'),
+                ?? (preState !== null && preState.insertScan !== undefined
+                  ? 'Không thấy đối tượng nào được tạo ra trong lượt này — không có gì để khôi phục.'
+                  : 'Chưa chụp được snapshot trước khi sửa — không có inverse rõ ràng để khôi phục an toàn.')),
           },
         });
       } catch (error) {

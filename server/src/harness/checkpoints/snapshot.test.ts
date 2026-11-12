@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isRestorable, pathFromLuau, snapshotPreState } from './snapshot';
+import { isRestorable, pathFromLuau, snapshotPostState, snapshotPreState, type PreStateSnapshot } from './snapshot';
 import type { McpGateway } from '../tools/types';
 
 /**
@@ -299,5 +299,170 @@ describe('snapshotPreState - a Luau property write names its target in the code'
         );
         expect(snapshot.inverse).toEqual([]);
         expect(isRestorable(snapshot)).toBe(false);
+    });
+});
+
+describe('snapshotPreState - a Luau snippet that CREATES instances', () => {
+    const creatingCode = [
+        'local part = Instance.new("Part")',
+        'part.Name = "MorphiMadeThis"',
+        'part.Parent = game:GetService("Workspace")',
+    ].join('\n');
+
+    it('lists the roots before the call, because a creation carries no path in the args', async () => {
+        const listing = JSON.stringify({ paths: ['Workspace', 'Workspace.Existing'], truncated: false });
+        const snapshot = await snapshotPreState(
+            gateway({ listTools: tools('studio.execute_luau'), callTool: async () => listing }),
+            'studio.execute_luau',
+            { code: creatingCode },
+        );
+        // No note: "no safe inverse" would be a lie once the diff can find what appeared.
+        expect(snapshot.notes).toEqual([]);
+        expect(snapshot.insertScan).toEqual({ roots: ['Workspace'], paths: ['Workspace', 'Workspace.Existing'] });
+        // Nothing is claimed restorable until the post-state proves what the call actually created.
+        expect(isRestorable(snapshot)).toBe(false);
+    });
+
+    it('does not list anything for a snippet that creates nothing', async () => {
+        const snapshot = await snapshotPreState(
+            gateway({ listTools: tools('studio.execute_luau'), callTool: async () => 'ok' }),
+            'studio.execute_luau',
+            { code: 'print("hello")' },
+        );
+        expect(snapshot.insertScan).toBeUndefined();
+        expect(snapshot.notes).toEqual(['Không có inverse an toàn cho studio.execute_luau.']);
+    });
+
+    it('reports a truncated or failed listing instead of diffing it', async () => {
+        for (const reply of [JSON.stringify({ paths: [], truncated: true }), 'error: boom', 'not json']) {
+            const snapshot = await snapshotPreState(
+                gateway({ listTools: tools('studio.execute_luau'), callTool: async () => reply }),
+                'studio.execute_luau',
+                { code: creatingCode },
+            );
+            expect(snapshot.insertScan).toBeUndefined();
+            expect(snapshot.notes[0]).toContain('Không liệt kê được');
+        }
+    });
+
+    it('scans the services the code names, not just Workspace', async () => {
+        const listing = JSON.stringify({ paths: ['Workspace', 'ServerStorage'], truncated: false });
+        const snapshot = await snapshotPreState(
+            gateway({ listTools: tools('studio.execute_luau'), callTool: async () => listing }),
+            'studio.execute_luau',
+            { code: 'local p = Instance.new("Part")\np.Parent = game:GetService("ServerStorage")' },
+        );
+        expect(snapshot.insertScan?.roots.sort()).toEqual(['ServerStorage', 'Workspace']);
+    });
+});
+
+describe('snapshotPostState - what the call created', () => {
+    it('turns a path that appeared into an inserted entry and a delete inverse', async () => {
+        const replies = [
+            JSON.stringify({ paths: ['Workspace'], truncated: false }),
+            JSON.stringify({ paths: ['Workspace', 'Workspace.MorphiMadeThis'], truncated: false }),
+        ];
+        let call = 0;
+        const mcp = gateway({
+            listTools: tools('studio.execute_luau'),
+            callTool: async () => replies[Math.min(call++, replies.length - 1)]!,
+        });
+        const pre = await snapshotPreState(mcp, 'studio.execute_luau', {
+            code: 'local part = Instance.new("Part")\npart.Parent = workspace',
+        });
+        const post = await snapshotPostState(mcp, pre);
+        expect(post.created).toEqual(['Workspace.MorphiMadeThis']);
+        expect(post.notes).toEqual([]);
+    });
+
+    it('creates nothing extra when the pre-listing failed', async () => {
+        const mcp = gateway({ listTools: tools('studio.execute_luau'), callTool: async () => 'error: no luau' });
+        const pre = await snapshotPreState(mcp, 'studio.execute_luau', { code: 'local p = Instance.new("Part")' });
+        const post = await snapshotPostState(mcp, pre);
+        expect(post.created).toEqual([]);
+    });
+});
+
+describe('snapshotPostState - a RENAMED instance is found again by its uniqueId', () => {
+    const listings = [
+        JSON.stringify({ paths: ['Workspace', 'Workspace.Part'], truncated: false }),
+        JSON.stringify({ paths: ['Workspace', 'Workspace.Folder', 'Workspace.Folder.NewPart'], truncated: false }),
+    ];
+
+    /** The Luau listing answers phase by phase; `inspect_instance` answers per path. */
+    function movingGateway() {
+        // The post-state listing is the SECOND one: the first happened before the call and is already
+        // stored in `insertScan.paths`.
+        let phase = 1;
+        return gateway({
+            listTools: tools('studio.execute_luau', 'studio.inspect_instance'),
+            callTool: async (_name, args) => {
+                const record = (args ?? {}) as Record<string, unknown>;
+                if (typeof record.code === 'string') {
+                    if (record.code.includes('GetComponents')) {
+                        return JSON.stringify({ name: 'NewPart', parentPath: 'Workspace.Folder' });
+                    }
+                    return listings[Math.min(phase++, 1)]!;
+                }
+                const path = String(record.path ?? '');
+                if (path === 'Workspace.Folder.NewPart') {
+                    return JSON.stringify({
+                        path, name: 'NewPart', className: 'Part', uniqueId: 'uid-1',
+                        properties: { Size: '1, 1, 1' },
+                    });
+                }
+                // The snapshot path stopped resolving the moment the rename landed.
+                return 'error: not found';
+            },
+        });
+    }
+
+    const pre = (): PreStateSnapshot => ({
+        entries: [{
+            kind: 'properties' as const,
+            path: 'Workspace.Part',
+            properties: { Size: '1, 1, 1' },
+            uniqueId: 'uid-1',
+        }],
+        inverse: [{ tool: 'set_properties' as const, path: 'Workspace.Part', properties: { Size: '1, 1, 1' } }],
+        notes: [],
+        insertScan: { roots: ['Workspace'], paths: ['Workspace', 'Workspace.Part'] },
+    });
+
+    it('records the entry at the path it moved to, naming the old one', async () => {
+        const post = await snapshotPostState(movingGateway(), pre());
+        expect(post.entries).toEqual([{
+            kind: 'properties',
+            path: 'Workspace.Folder.NewPart',
+            fromPath: 'Workspace.Part',
+            properties: { Size: '1, 1, 1', Name: { $name: 'NewPart' }, Parent: { $parent: 'Workspace.Folder' } },
+        }]);
+        expect(post.notes).toEqual([]);
+    });
+
+    it('does not call a MOVED instance "created" — deleting it would undo the wrong thing', async () => {
+        const post = await snapshotPostState(movingGateway(), pre());
+        // The folder the instance was moved INTO is genuinely new, so it is a creation; the instance
+        // itself is not, and deleting it would destroy what the rename undo is about to put back.
+        expect(post.created).toEqual(['Workspace.Folder']);
+    });
+
+    it('keeps the note when it cannot identify the moved instance', async () => {
+        const post = await snapshotPostState(gateway({
+            listTools: tools('studio.execute_luau', 'studio.inspect_instance'),
+            callTool: async (_name, args) => {
+                const record = (args ?? {}) as Record<string, unknown>;
+                if (typeof record.code === 'string') {
+                    return record.code.includes('GetComponents')
+                        ? JSON.stringify({ name: 'NewPart', parentPath: 'Workspace.Folder' })
+                        : listings[1]!;
+                }
+                const path = String(record.path ?? '');
+                if (path === 'Workspace.Part') return 'error: not found';
+                return JSON.stringify({ path, uniqueId: 'uid-OTHER', properties: {} });
+            },
+        }), pre());
+        expect(post.entries).toEqual([]);
+        expect(post.notes.join(' ')).toContain('Không đọc lại được thuộc tính');
     });
 });

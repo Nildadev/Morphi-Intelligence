@@ -7,6 +7,7 @@ import {
   deleteInstance,
   inspectInstance,
   instanceExists,
+  listInstancePaths,
   propertiesFrom,
   recreateInstance,
   reconstructValue,
@@ -16,6 +17,7 @@ import {
   sameIdentity,
   scriptSourceFrom,
   setInstanceProperties,
+  uniqueIdFrom,
   writeScriptSource,
 } from './studioWire';
 
@@ -661,5 +663,48 @@ describe('identity - a rename and a reparent both have an inverse', () => {
   it('keeps the identity markers out of the scalar filter', async () => {
     const bag = restorableProperties({ Anchored: true, Name: { $name: 'X' }, Parent: { $parent: 'Workspace' } });
     expect(bag).toEqual({ Anchored: true, Name: { $name: 'X' }, Parent: { $parent: 'Workspace' } });
+  });
+});
+
+describe('listInstancePaths - the record of what exists', () => {
+  it('returns the paths it walked', async () => {
+    const mcp = rawGateway({ execute_luau: () => JSON.stringify({ paths: ['Workspace', 'Workspace.Part'], truncated: false }) });
+    expect(await listInstancePaths(mcp, ['Workspace'])).toEqual(['Workspace', 'Workspace.Part']);
+  });
+
+  it('refuses a TRUNCATED listing, because a missing path would read as newly created', async () => {
+    const mcp = rawGateway({ execute_luau: () => JSON.stringify({ paths: ['Workspace'], truncated: true }) });
+    expect(await listInstancePaths(mcp, ['Workspace'])).toBeNull();
+  });
+
+  it('answers null when Studio errors or answers something that is not JSON', async () => {
+    for (const reply of ['error: boom', 'not json', { ok: false }]) {
+      const mcp = rawGateway({ execute_luau: () => reply });
+      expect(await listInstancePaths(mcp, ['Workspace'])).toBeNull();
+    }
+  });
+
+  it('walks every requested root in one call', async () => {
+    const mcp = rawGateway({ execute_luau: () => JSON.stringify({ paths: [], truncated: false }) });
+    await listInstancePaths(mcp, ['Workspace', 'ServerStorage']);
+    expect(String(mcp.calls[0]?.args.code)).toContain('{"Workspace", "ServerStorage"}');
+  });
+});
+
+describe('uniqueIdFrom - the stable handle a rename cannot change', () => {
+  it('reads the top-level uniqueId of a real reply', () => {
+    const reply = JSON.stringify({ path: 'Workspace.Part', name: 'Part', className: 'Part', uniqueId: 'uid-1', properties: {} });
+    expect(uniqueIdFrom(reply)).toBe('uid-1');
+  });
+
+  it('reads it from a gateway-wrapped text reply and from `.instance`', () => {
+    expect(uniqueIdFrom({ text: JSON.stringify({ uniqueId: 'uid-2' }) })).toBe('uid-2');
+    expect(uniqueIdFrom({ instance: { uniqueId: 'uid-3' } })).toBe('uid-3');
+  });
+
+  it('answers null when there is nothing to read, instead of inventing a handle', () => {
+    for (const reply of [null, 'error: not found', 'not json', JSON.stringify({ properties: {} })]) {
+      expect(uniqueIdFrom(reply)).toBeNull();
+    }
   });
 });

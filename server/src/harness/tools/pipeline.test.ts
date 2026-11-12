@@ -174,6 +174,53 @@ describe('ToolPipeline dispatch', () => {
     db.close();
   });
 
+  it('makes a Luau INSERT restorable from the before/after listing, with a delete as its inverse', async () => {
+    const db = createTestDb();
+    db.prepare('INSERT INTO projects (id, name, created_at, last_active) VALUES (?, ?, ?, ?)').run('p1', 'P', 1, 1);
+    db.prepare('INSERT INTO sessions (id, project_id, created_at, last_updated) VALUES (?, ?, ?, ?)').run('s1', 'p1', 1, 1);
+    const checkpoints = new CheckpointStore(db);
+    const registry = new ToolRegistry([
+      def('studio.execute_luau', async () => 'ok', {
+        isConcurrencySafe: false,
+        presentation: { label: 'Chạy Luau', risk: 'medium' },
+      }),
+    ]);
+    // The listing answers BEFORE the call first, then AFTER it: the part is what the call created.
+    let listing = 0;
+    const withLuau: ToolRunContext['mcp'] = {
+      ...NO_MCP,
+      connected: true,
+      studioLinked: true,
+      listTools: async () => [{ name: 'studio.execute_luau', description: 'luau', parameters: { type: 'object' } }],
+      callTool: async (_name, args) => {
+        const code = String((args as Record<string, unknown> | undefined)?.code ?? '');
+        if (code.includes('JSONEncode')) {
+          const paths: string[] = listing === 0 ? ['Workspace'] : ['Workspace', 'Workspace.MadeByTurn'];
+          listing += 1;
+          return JSON.stringify({ paths, truncated: false });
+        }
+        return 'ok';
+      },
+    };
+    const emit = fakeEmit();
+
+    await new ToolPipeline(registry, new ApprovalService(), undefined, undefined, checkpoints).run(
+      [call('c1', 'studio.execute_luau', { code: 'local p = Instance.new("Part")' + String.fromCharCode(10) + 'p.Parent = workspace' })],
+      { ...runContext(emit.emit), mcp: withLuau },
+    );
+
+    const rows = checkpoints.list('s1');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].manifest.restorable).toBe(true);
+    expect(rows[0].manifest.preState).toMatchObject({
+      entries: [{ kind: 'inserted', path: 'Workspace.MadeByTurn' }],
+      inverse: [{ tool: 'delete_instance', path: 'Workspace.MadeByTurn' }],
+      notes: [],
+      insertScan: { roots: ['Workspace'], paths: ['Workspace'] },
+    });
+    db.close();
+  });
+
   it('captures a restorable snapshot when the Studio read tool is available', async () => {
     const db = createTestDb();
     db.prepare('INSERT INTO projects (id, name, created_at, last_active) VALUES (?, ?, ?, ?)').run('p1', 'P', 1, 1);

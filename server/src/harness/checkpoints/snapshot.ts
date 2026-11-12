@@ -4,6 +4,8 @@ import {
   captureInstanceTree,
   identityMarkers,
   inspectInstance,
+  inspectUniqueId,
+  listInstancePaths,
   readScriptSource,
   restorableProperties,
   type SnapshotEntry,
@@ -19,12 +21,28 @@ export interface PreStateSnapshot {
   inverse: InverseStep[];
   /** Why a target could not be snapshotted, when some could not. */
   notes: string[];
+  /**
+   * What the roots looked like BEFORE a Luau snippet that creates instances ran.
+   *
+   * A created instance carries no path in the args — `Instance.new("Part")` plus a `Parent` write
+   * carries nothing we can read — so its inverse (delete it) can only be found by diffing the same
+   * roots after the call. Measured gap before this existed: an undo of a turn that inserted a part
+   * left the part behind and reported the turn as restored.
+   */
+  insertScan?: { roots: string[]; paths: string[] };
 }
 
 /** One target's state AFTER the mutation landed, captured by re-reading it. */
 export type PostStateEntry =
   | { kind: 'script'; path: string; source: string }
-  | { kind: 'properties'; path: string; properties: Record<string, unknown> };
+  | {
+      kind: 'properties';
+      /** Where the instance is NOW — it can differ from the snapshot path after a rename/reparent. */
+      path: string;
+      /** The snapshot path this entry was captured for, when the instance moved. */
+      fromPath?: string;
+      properties: Record<string, unknown>;
+    };
 
 /**
  * What the turn itself wrote, per target.
@@ -44,6 +62,11 @@ export interface PostStateSnapshot {
   entries: PostStateEntry[];
   /** Targets whose post-state could not be read; drift then falls back to the pre-state comparison. */
   notes: string[];
+  /**
+   * Paths that appeared after the call, i.e. what an `execute_luau` created. Each one becomes an
+   * `inserted` entry whose inverse is a delete.
+   */
+  created: string[];
 }
 
 
@@ -67,6 +90,13 @@ export interface PostStateSnapshot {
  * The snapshot is taken BEFORE the mutating call runs and is best-effort: a failed snapshot must
  * not block the user's tool call, it only downgrades the checkpoint to non-restorable.
  */
+
+/**
+ * How many new paths to inspect while looking for a moved instance. A rename adds one path; a
+ * reparent adds that instance and nothing else. Eight leaves room for a snippet that also creates a
+ * few things, without turning the post-state into a scan of the whole place.
+ */
+const RELOCATE_MAX_CANDIDATES = 8;
 
 /** Tool names that write script source — the snapshot keys off these to pre-read old source. */
 const SCRIPT_WRITE_TOOLS = [
@@ -154,6 +184,7 @@ export async function snapshotPreState(
   const entries: SnapshotEntry[] = [];
   const inverse: InverseStep[] = [];
   const notes: string[] = [];
+  let insertScan: PreStateSnapshot['insertScan'];
 
   const isScriptWrite = (SCRIPT_WRITE_TOOLS as readonly string[]).includes(toolName);
   const isInsert = (INSERT_TOOLS as readonly string[]).includes(toolName);
@@ -214,7 +245,18 @@ export async function snapshotPreState(
     // A Luau property write carries no path in its args — `workspace.Part.CFrame = …` puts it in the
     // code — so the same `pathFromLuau` the delete path uses reads it out. Without that, MOVING a part
     // was not restorable at all, which is the most common Studio edit there is.
-    const path = pathOf(args) ?? pathFromLuau(codeOf(args) ?? '');
+    const code = codeOf(args) ?? '';
+    const path = pathOf(args) ?? pathFromLuau(code);
+    // Creating an instance carries no path at all, so the listing before/after IS the only record.
+    const insertRoots = insertRootsOf(code);
+    if (insertRoots.length > 0) {
+      const before = await listInstancePaths(mcp, insertRoots, signal);
+      if (before === null) {
+        notes.push('Không liệt kê được các đối tượng trước khi chạy — không biết lượt này có tạo gì mới.');
+      } else {
+        insertScan = { roots: insertRoots, paths: before };
+      }
+    }
     if (path !== null) {
       const properties = await inspectInstance(mcp, path, signal);
       if (properties !== null) {
@@ -230,18 +272,47 @@ export async function snapshotPreState(
         if (Object.keys(restorable).length === 0) {
           notes.push(`Không có thuộc tính nào của ${path} khôi phục được an toàn.`);
         } else {
-          entries.push({ kind: 'properties', path, properties: restorable });
+          // The stable handle for a later rename/reparent: the bag has it at the top level only.
+          const uniqueId = await inspectUniqueId(mcp, path, signal);
+          const entry: SnapshotEntry = { kind: 'properties', path, properties: restorable };
+          if (uniqueId !== null) entry.uniqueId = uniqueId;
+          entries.push(entry);
           inverse.push({ tool: 'set_properties', path, properties: restorable });
         }
       } else {
         notes.push(`Không có inverse an toàn cho ${toolName} trên ${path}.`);
       }
-    } else {
+    } else if (insertRoots.length === 0) {
       notes.push(`Không có inverse an toàn cho ${toolName}.`);
     }
   }
 
-  return { entries, inverse, notes };
+  const snapshot: PreStateSnapshot = { entries, inverse, notes };
+  if (insertScan !== undefined) snapshot.insertScan = insertScan;
+  return snapshot;
+}
+
+/**
+ * The roots a creating `execute_luau` must be listed under, or `[]` when the code creates nothing.
+ *
+ * `Instance.new` is the only way to make an instance from Luau. The roots are the services the code
+ * names plus Workspace (the default home of anything a user builds by script): scanning a service the
+ * code never touches would cost a listing and prove nothing, while scanning too few would hide the
+ * creation and let the undo leave it behind.
+ */
+function insertRootsOf(code: string): string[] {
+  // A rename or a reparent moves an instance to a path the snapshot cannot read from the args, so the
+  // before/after listing is needed for those too — it is what lets the post-state find it again.
+  const mutates = /Instance\s*\.\s*new\s*\(/.test(code)
+    || /\.\s*Parent\s*=/.test(code)
+    || /\.\s*Name\s*=/.test(code);
+  if (!mutates) return [];
+  const roots = new Set<string>(['Workspace']);
+  for (const match of code.matchAll(/GetService\s*\(\s*"([A-Za-z]+)"\s*\)/g)) {
+    if (match[1] !== undefined) roots.add(match[1]);
+  }
+  if (/workspace/.test(code)) roots.add('Workspace');
+  return [...roots];
 }
 
 /** The Luau source, when the tool takes one. */
@@ -337,6 +408,35 @@ export async function snapshotPostState(
 ): Promise<PostStateSnapshot> {
   const entries: PostStateEntry[] = [];
   const notes: string[] = [];
+
+  /**
+   * Where a moved instance lives now.
+   *
+   * A turn that renames or reparents an instance makes its snapshot path stop resolving the moment it
+   * lands, so `inspect_instance` on that path answers nothing. The paths that APPEARED during the call
+   * are found by listing the same roots again, and the instance is identified among them by the
+   * `uniqueId` captured with the snapshot — a match is proof, not a guess about names.
+   */
+  const relocated = async (uniqueId: string, appeared: readonly string[]): Promise<string | null> => {
+    for (const candidate of appeared.slice(0, RELOCATE_MAX_CANDIDATES)) {
+      if ((await inspectUniqueId(mcp, candidate, signal)) === uniqueId) return candidate;
+    }
+    return null;
+  };
+
+  // One listing for both jobs: what the call CREATED and where a moved instance went.
+  let appeared: string[] = [];
+  if (pre.insertScan !== undefined) {
+    const after = await listInstancePaths(mcp, pre.insertScan.roots, signal);
+    if (after === null) {
+      notes.push('Không liệt kê lại được các đối tượng sau khi chạy — không biết lượt này đã tạo gì.');
+    } else {
+      const before = new Set(pre.insertScan.paths);
+      appeared = after.filter((path) => !before.has(path));
+    }
+  }
+  const movedFrom = new Set<string>();
+
   for (const entry of pre.entries) {
     // Nothing to re-read: an inserted target is gone by design of its inverse, and a deleted one is
     // already absent — probing it would only add a false "could not read" note.
@@ -350,7 +450,16 @@ export async function snapshotPostState(
       entries.push({ kind: 'script', path: entry.path, source });
       continue;
     }
-    const bag = await inspectInstance(mcp, entry.path, signal);
+    let livePath = entry.path;
+    let bag = await inspectInstance(mcp, livePath, signal);
+    if (bag === null && entry.uniqueId !== undefined && appeared.length > 0) {
+      const moved = await relocated(entry.uniqueId, appeared);
+      if (moved !== null) {
+        livePath = moved;
+        movedFrom.add(moved);
+        bag = await inspectInstance(mcp, moved, signal);
+      }
+    }
     if (bag === null) {
       notes.push(`Không đọc lại được thuộc tính của ${entry.path} sau khi sửa.`);
       continue;
@@ -359,10 +468,16 @@ export async function snapshotPostState(
     // The identity must be captured here too: drift detection compares the live name/parent/transform
     // with what the TURN wrote, and without a post marker a renamed or moved instance would look
     // hand-edited to its own undo.
-    const identity = await captureIdentity(mcp, entry.path, signal);
+    const identity = await captureIdentity(mcp, livePath, signal);
     if (identity !== null) Object.assign(properties, identityMarkers(identity));
-    entries.push({ kind: 'properties', path: entry.path, properties });
+    if (livePath === entry.path) entries.push({ kind: 'properties', path: livePath, properties });
+    else entries.push({ kind: 'properties', path: livePath, fromPath: entry.path, properties });
   }
-  return { entries, notes };
+
+  // What appeared while the call ran is what the call created; the inverse of that is a delete. A path
+  // that turned out to be a MOVED instance is not new — deleting it would destroy what the undo of the
+  // rename is about to put back.
+  const created = appeared.filter((path) => !movedFrom.has(path));
+  return { entries, notes, created };
 }
 

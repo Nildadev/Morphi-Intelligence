@@ -40,6 +40,10 @@ export const FAKE_SCRIPTS = [
   // Rename/reparent probe: neither value is in the property bag, so both used to be silently
   // un-undoable while the checkpoint still claimed restorable. Scenario 5 of the live e2e.
   'studio-rename',
+  // Insert probe: the call creates an instance through Luau, so its inverse (delete it) can only come
+  // from diffing the workspace listing before/after. Scenario 6 of the live e2e. (Named `created`
+  // because `studio-insert` already exists below as the approval demo.)
+  'studio-created',
   // Design tour: one turn that calls every row shape the transcript can render (read, search,
   // command, edit, create, multi-edit, failure), so the whole log styling can be inspected in a
   // single screen without a Roblox Studio connection.
@@ -317,6 +321,30 @@ async function* fakeStream(request: LlmRequest, fallback: FakeScript, slowDelay:
       return;
     }
     yield { type: 'text_delta', text: 'Đã đổi tên và chuyển MorphiE2EPart vào MorphiE2EFolder.' };
+    yield { type: 'finish', reason: 'stop' };
+    return;
+  }
+
+  if (script === 'studio-created') {
+    const callId = 'fake_insert_1';
+    if (!answered.has(callId)) {
+      const code = 'local ws = game:GetService("Workspace")\n'
+        + 'local part = Instance.new("Part")\n'
+        + 'part.Name = "MorphiE2ECreated"\n'
+        + 'part.Anchored = true\n'
+        + 'part.Size = Vector3.new(2, 2, 2)\n'
+        + 'part.Parent = ws\n'
+        + 'return "ok"';
+      const args = { code, datamodel_type: 'Edit' };
+      yield { type: 'tool_call_start', callId, name: 'studio.execute_luau' };
+      if (signal.aborted) return;
+      yield { type: 'tool_call_delta', callId, argsDelta: JSON.stringify(args) };
+      if (signal.aborted) return;
+      yield { type: 'tool_call_end', callId, name: 'studio.execute_luau', args };
+      yield { type: 'finish', reason: 'tool_calls' };
+      return;
+    }
+    yield { type: 'text_delta', text: 'Đã tạo MorphiE2ECreated trong Workspace.' };
     yield { type: 'finish', reason: 'stop' };
     return;
   }

@@ -73,7 +73,19 @@ export interface InstanceNode {
 
 export type SnapshotEntry =
   | { kind: 'script'; path: string; source: string }
-  | { kind: 'properties'; path: string; properties: Record<string, unknown> }
+  | {
+      kind: 'properties';
+      path: string;
+      properties: Record<string, unknown>;
+      /**
+       * The Studio `uniqueId` of the instance, when the server reported one.
+       *
+       * It is the only handle that survives a rename or a reparent: it is NOT readable from Luau
+       * ("lacking capability RobloxScript", measured), so it cannot be looked up by script — but it
+       * identifies the instance exactly once the listing says which paths are new.
+       */
+      uniqueId?: string;
+    }
   | { kind: 'inserted'; path: string }
   | { kind: 'deleted'; path: string; tree: InstanceNode };
 
@@ -145,6 +157,51 @@ export function propertiesFrom(result: unknown): Record<string, unknown> | null 
     /* not JSON — falls through to null */
   }
   return null; }
+
+/**
+ * The `uniqueId` a Studio `inspect_instance` reply carries at the TOP level (not in `properties`).
+ *
+ * MEASURED LIVE: `{ path, name, className, uniqueId: "7a7dece6-…", properties: {...} }`. Nothing can
+ * read it from Luau, so this is the only stable identity handle available to the restore engine.
+ */
+export function uniqueIdFrom(result: unknown): string | null {
+  if (result === null || result === undefined) return null;
+  const dig = (value: unknown): string | null => {
+    if (typeof value === 'string') {
+      try {
+        return dig(JSON.parse(value));
+      } catch {
+        return null;
+      }
+    }
+    if (value === null || typeof value !== 'object') return null;
+    const record = value as Record<string, unknown>;
+    if (typeof record.uniqueId === 'string' && record.uniqueId !== '') return record.uniqueId;
+    const inner = record.instance;
+    if (inner !== null && typeof inner === 'object') {
+      const nested = (inner as Record<string, unknown>).uniqueId;
+      if (typeof nested === 'string' && nested !== '') return nested;
+    }
+    if (typeof record.text === 'string') return dig(record.text);
+    return null;
+  };
+  return dig(result);
+}
+
+/** The stable identity of an instance, or null when the server does not report one. */
+export async function inspectUniqueId(
+  mcp: McpGateway,
+  path: string,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  const tool = await pickTool(mcp, INSPECT_CANDIDATES, signal);
+  if (tool === undefined) return null;
+  try {
+    return uniqueIdFrom(await mcp.callTool(tool.name, { path }, signal));
+  } catch {
+    return null;
+  }
+}
 
 /** The gateway entry worth its argument shape: name plus the schema the gateway advertises. */
 interface PickedTool {
@@ -623,6 +680,13 @@ export async function setInstanceProperties(
 const TREE_MAX_NODES = 200;
 const TREE_MAX_DEPTH = 4;
 
+/**
+ * Bound for the "what did this Luau create" listing. Larger than the tree bound because it walks
+ * several roots at once, but still one cheap call; hitting it yields `null`, never a partial diff.
+ */
+const LIST_MAX_NODES = 400;
+const LIST_MAX_DEPTH = 5;
+
 /** A node as Luau reports it: everything but the property bag, which comes from `inspect_instance`. */
 export interface NodeOutline {
   path: string;
@@ -811,6 +875,58 @@ export async function recreateInstance(
   }
 
   return { created, skipped };
+}
+
+/**
+ * Every dot path under the given roots, in ONE Luau round trip.
+ *
+ * Used to find out what an arbitrary `execute_luau` CREATED: a new instance has no path in the args
+ * (`Instance.new("Part")` + `part.Parent = …`), so the only honest way to know is to list the same
+ * roots before the call and again after it.
+ *
+ * `null` means "no trustworthy listing" — a Luau error, a reply that is not JSON, or a place so large
+ * the bounded walk was cut short. A truncated listing must never be diffed: the instances it missed
+ * would read as newly created and an undo would DELETE them.
+ */
+export async function listInstancePaths(
+  mcp: McpGateway,
+  roots: readonly string[],
+  signal?: AbortSignal,
+): Promise<string[] | null> {
+  const tool = await pickTool(mcp, LUAU_CANDIDATES, signal);
+  if (tool === undefined) return null;
+  const rootsLiteral = `{${roots.map((root) => JSON.stringify(root)).join(', ')}}`;
+  const code = [
+    `local roots = ${rootsLiteral}`,
+    'local out = {}',
+    'local budget = ' + String(LIST_MAX_NODES),
+    'local truncated = false',
+    'local function walk(inst, nodePath, depth)',
+    '  if budget <= 0 then truncated = true return end',
+    '  budget = budget - 1',
+    '  table.insert(out, nodePath)',
+    '  if depth >= ' + String(LIST_MAX_DEPTH) + ' then return end',
+    '  for _, child in ipairs(inst:GetChildren()) do',
+    '    walk(child, nodePath .. "." .. child.Name, depth + 1)',
+    '  end',
+    'end',
+    'for _, name in ipairs(roots) do',
+    '  local ok, service = pcall(function() return game:GetService(name) end)',
+    '  if ok and service ~= nil then walk(service, name, 0) end',
+    'end',
+    'return game:GetService("HttpService"):JSONEncode({ paths = out, truncated = truncated })',
+  ].join('\n');
+  const result = await mcp.callTool(tool.name, { code, datamodel_type: DATAMODEL }, signal);
+  if (isErrorText(result) || typeof result !== 'string') return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result.trim());
+  } catch {
+    return null;
+  }
+  const record = parsed as { paths?: unknown; truncated?: unknown };
+  if (!Array.isArray(record.paths) || record.truncated === true) return null;
+  return record.paths.filter((path): path is string => typeof path === 'string');
 }
 
 /** The Luau tool name, or a literal that fails loudly when Studio has none. */

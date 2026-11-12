@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createTestDb } from '../../../test/db';
 import { applyRestore, previewRestore, restoreTurn } from './restore';
 import { CheckpointStore } from './store';
-import type { PreStateSnapshot } from './snapshot';
+import type { PostStateSnapshot, PreStateSnapshot } from './snapshot';
 import type { McpGateway } from '../tools/types';
 
 /**
@@ -26,7 +26,12 @@ const snapshotOf = (over: Partial<PreStateSnapshot> = {}): PreStateSnapshot => (
     ...over,
 });
 
-function record(store: CheckpointStore, snapshot: PreStateSnapshot | null, restorable: boolean) {
+function record(
+    store: CheckpointStore,
+    snapshot: PreStateSnapshot | null,
+    restorable: boolean,
+    postState?: PostStateSnapshot,
+) {
     return store.record({
         sessionId: 's1',
         label: 'test',
@@ -37,6 +42,7 @@ function record(store: CheckpointStore, snapshot: PreStateSnapshot | null, resto
             targets: ['A'],
             outcome: 'ok',
             preState: snapshot,
+            ...(postState === undefined ? {} : { postState }),
             restorable,
             restoreReason: restorable ? 'ok' : 'no snapshot',
         },
@@ -627,4 +633,180 @@ describe('restore of a MOVED part (CFrame)', () => {
     expect(restored.result.status).toBe('restore-failed');
     expect(restored.result.failed[0]?.reason).toContain('không khớp');
   });
+});
+
+describe('restore of an instance a Luau snippet CREATED', () => {
+    const createdSnapshot = (): PreStateSnapshot => ({
+        entries: [{ kind: 'inserted', path: 'Workspace.MorphiMadeThis' }],
+        inverse: [{ tool: 'delete_instance', path: 'Workspace.MorphiMadeThis' }],
+        notes: [],
+        insertScan: { roots: ['Workspace'], paths: ['Workspace'] },
+    });
+
+    /** `exists` answers the probe; a Destroy flips it, like a real Studio session. */
+    function createGateway(options: { exists?: boolean } = {}) {
+        let exists = options.exists ?? true;
+        const destroyed: string[] = [];
+        const gateway: McpGateway & { destroyed: typeof destroyed } = {
+            connected: true,
+            studioLinked: true,
+            server: { source: 'studio-builtin', path: 'C:/mcp.exe', version: '1' },
+            studio: { id: 'place', name: 'P' },
+            toolCount: 1,
+            lastError: null,
+            destroyed,
+            listTools: async () => [{ name: 'execute_luau', description: 'luau', parameters: { type: 'object' } }],
+            callTool: async (_name, args) => {
+                const code = String((args as Record<string, unknown> | undefined)?.code ?? '');
+                if (code.includes('"exists"')) return exists ? 'exists' : 'missing';
+                if (code.includes('Destroy()')) {
+                    destroyed.push(code);
+                    exists = false;
+                    return 'ok';
+                }
+                return JSON.stringify({ ok: true, failed: [] });
+            },
+            reconnect: async () => undefined,
+            close: async () => undefined,
+        };
+        return gateway;
+    }
+
+    it('deletes what the turn created and marks the checkpoint restored', async () => {
+        const store = new CheckpointStore(db());
+        const checkpoint = record(store, createdSnapshot(), true);
+        const gateway = createGateway();
+        const restored = await applyRestore(gateway, store, checkpoint.id);
+        expect(restored).toMatchObject({ ok: true, result: { status: 'restored' } });
+        // The delete must actually be a Destroy of the recorded path, and verified by a probe after it.
+        expect(gateway.destroyed[0]).toContain('Workspace');
+        expect(gateway.destroyed[0]).toContain('MorphiMadeThis');
+    });
+
+    it('is a no-op when the created instance is already gone, not a failure', async () => {
+        const store = new CheckpointStore(db());
+        const checkpoint = record(store, createdSnapshot(), true);
+        const gateway = createGateway({ exists: false });
+        const restored = await applyRestore(gateway, store, checkpoint.id);
+        expect(restored).toMatchObject({ ok: true, result: { status: 'restored' } });
+        expect(gateway.destroyed).toEqual([]);
+    });
+
+    it('previews the delete instead of a property restore', async () => {
+        const store = new CheckpointStore(db());
+        const checkpoint = record(store, createdSnapshot(), true);
+        const preview = await previewRestore(createGateway(), store, checkpoint.id);
+        expect(preview.ok).toBe(true);
+        if (!preview.ok) return;
+        expect(preview.preview.steps).toEqual([{
+            path: 'Workspace.MorphiMadeThis',
+            action: 'delete-inserted',
+            summary: 'Xoá Workspace.MorphiMadeThis (được tạo bởi lượt này)',
+        }]);
+    });
+});
+
+describe('restore of a RENAMED instance - the snapshot path no longer resolves', () => {
+    const oldProps = { Size: '1, 1, 1', Name: { $name: 'Part' }, Parent: { $parent: 'Workspace' } };
+    /** The instance is at `Workspace.Folder.NewPart` until the undo renames it back. */
+    function renamedGateway() {
+        let moved = true;
+        const writes: string[] = [];
+        const gateway: McpGateway & { writes: typeof writes } = {
+            connected: true,
+            studioLinked: true,
+            server: { source: 'studio-builtin', path: 'C:/mcp.exe', version: '1' },
+            studio: { id: 'place', name: 'P' },
+            toolCount: 2,
+            lastError: null,
+            writes,
+            listTools: async () => ['execute_luau', 'inspect_instance'].map((name) => ({
+                name, description: name, parameters: { type: 'object' },
+            })),
+            callTool: async (name, args) => {
+                const record = (args ?? {}) as Record<string, unknown>;
+                if (name === 'inspect_instance' || typeof record.path === 'string') {
+                    const path = String(record.path ?? '');
+                    if (moved && path === 'Workspace.Folder.NewPart') {
+                        return JSON.stringify({ path, uniqueId: 'uid-1', properties: { Size: '1, 1, 1' } });
+                    }
+                    if (!moved && path === 'Workspace.Part') {
+                        return JSON.stringify({ path, uniqueId: 'uid-1', properties: { Size: '1, 1, 1' } });
+                    }
+                    return 'error: not found';
+                }
+                const code = String(record.code ?? '');
+                if (code.includes('GetComponents')) {
+                    return JSON.stringify(moved
+                        ? { name: 'NewPart', parentPath: 'Workspace.Folder' }
+                        : { name: 'Part', parentPath: 'Workspace' });
+                }
+                // A property write: the undo put the recorded identity back.
+                if (code.includes('attempt(')) {
+                    writes.push(code);
+                    moved = false;
+                    return JSON.stringify({ applied: ['Size', 'Name', 'Parent'], failed: [] });
+                }
+                return JSON.stringify({ applied: [], failed: [] });
+            },
+            reconnect: async () => undefined,
+            close: async () => undefined,
+        };
+        return gateway;
+    }
+
+    const snapshot = (): PreStateSnapshot => ({
+        entries: [{ kind: 'properties', path: 'Workspace.Part', properties: oldProps, uniqueId: 'uid-1' }],
+        inverse: [{ tool: 'set_properties', path: 'Workspace.Part', properties: oldProps }],
+        notes: [],
+    });
+
+    const postState = {
+        entries: [{
+            kind: 'properties' as const,
+            path: 'Workspace.Folder.NewPart',
+            fromPath: 'Workspace.Part',
+            properties: { Size: '1, 1, 1', Name: { $name: 'NewPart' }, Parent: { $parent: 'Workspace.Folder' } },
+        }],
+        notes: [],
+        created: [],
+    };
+
+    it('previews clean when the live instance still carries what the turn wrote', async () => {
+        const store = new CheckpointStore(db());
+        const checkpoint = record(store, snapshot(), true, postState);
+        const preview = await previewRestore(renamedGateway(), store, checkpoint.id, undefined, true);
+        expect(preview.ok).toBe(true);
+        if (!preview.ok) return;
+        expect(preview.preview.drift).toEqual([]);
+    });
+
+    it('writes at the path the instance moved to, and verifies where it lands back', async () => {
+        const store = new CheckpointStore(db());
+        const checkpoint = record(store, snapshot(), true, postState);
+        const gateway = renamedGateway();
+        const restored = await applyRestore(gateway, store, checkpoint.id, undefined, true);
+        expect(restored).toMatchObject({ ok: true, result: { status: 'restored' } });
+        // The write resolved the MOVED path; the read-back had to resolve the old one, where the
+        // restored Name/Parent put it — reading the moved path would report a false failure.
+        expect(gateway.writes[0]).toContain('NewPart');
+    });
+
+    it('still refuses when a human renamed it to something else', async () => {
+        const store = new CheckpointStore(db());
+        const checkpoint = record(store, snapshot(), true);
+        record(store, snapshot(), true, {
+            ...postState,
+            entries: [{
+                kind: 'properties' as const,
+                path: 'Workspace.Folder.HumanName',
+                fromPath: 'Workspace.Part',
+                properties: { Size: '1, 1, 1', Name: { $name: 'HumanName' }, Parent: { $parent: 'Workspace.Folder' } },
+            }],
+        });
+        const gateway = renamedGateway();
+        const restored = await applyRestore(gateway, store, checkpoint.id, undefined, true);
+        expect(restored).toEqual({ ok: false, reason: 'NOT_RESTORABLE' });
+        expect(gateway.writes).toEqual([]);
+    });
 });

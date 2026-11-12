@@ -357,7 +357,8 @@ console.log('\n[5] rename/reparent turn');
 /** name + parent path, exactly what the undo has to put back. */
 async function identityOf(name) {
   return withStudio(async (client) => {
-    const code = 'local root = game:GetService("Workspace"):FindFirstChild(' + JSON.stringify(name) + ')\n'
+    // Recursive: after the reparent the instance lives inside a folder, not directly in Workspace.
+    const code = 'local root = game:GetService("Workspace"):FindFirstChild(' + JSON.stringify(name) + ', true)\n'
       + 'if root == nil then return "missing" end\n'
       + 'return root.Name .. "|" .. root.Parent:GetFullName()';
     const result = await client.callTool({ name: 'execute_luau', arguments: { code, datamodel_type: 'Edit' } });
@@ -436,6 +437,48 @@ const handParent = await withStudio(async (client) => {
   return String(result.content?.find((part) => typeof part.text === 'string')?.text ?? '').trim();
 });
 check('part hand-reparented into ServerStorage', handParent === 'ServerStorage', handParent);
+
+// ---------------------------------------------------------------------------------------------
+// Scenario 6 — an INSERT: the instance only exists because the turn made it
+// ---------------------------------------------------------------------------------------------
+console.log('\n[6] insert turn');
+
+/** Does a path resolve right now? `missing` also covers a path the launcher cannot walk. */
+async function existsAt(path) {
+  const segments = path.split('.');
+  const literal = '{' + segments.map((segment) => JSON.stringify(segment)).join(', ') + '}';
+  return withStudio(async (client) => {
+    const code = 'local segs = ' + literal + '\n'
+      + 'local root = game:GetService(segs[1])\n'
+      + 'for i = 2, #segs do\n'
+      + '  if root == nil then break end\n'
+      + '  root = root:FindFirstChild(segs[i])\n'
+      + 'end\n'
+      + 'return root == nil and "missing" or "exists"';
+    const result = await client.callTool({ name: 'execute_luau', arguments: { code, datamodel_type: 'Edit' } });
+    return String(result.content?.find((part) => typeof part.text === 'string')?.text ?? '').trim();
+  });
+}
+
+// A leftover from an earlier run would make the diff believe the instance already existed.
+await destroyLive('Workspace.MorphiE2ECreated');
+check('nothing named MorphiE2ECreated before the turn', (await existsAt('Workspace.MorphiE2ECreated')) === 'missing');
+
+const insertSession = await newSession('e2e-insert-undo');
+const insertTurn = await turn(insertSession, '/script studio-created');
+check('insert turn stream finished', insertTurn.status === 200, `${insertTurn.sse.length} bytes`);
+check('the turn really created the part', (await existsAt('Workspace.MorphiE2ECreated')) === 'exists');
+
+const inserted = await restorableCallIds(insertSession);
+check('insert checkpoint recorded as restorable', inserted.restorable.length === 1,
+  `${inserted.restorable.length} restorable: ${inserted.callIds.join(', ')}`);
+if (inserted.restorable.length === 0) console.log(JSON.stringify(inserted.rows, null, 2).slice(0, 2000));
+
+const insertUndo = await api('POST', `/api/sessions/${insertSession}/undo-turn`, { callIds: inserted.callIds });
+check('insert undo-turn 200', insertUndo.status === 200, JSON.stringify(insertUndo.body).slice(0, 400));
+check('insert undo reported a restore', insertUndo.body?.status === 'restored', JSON.stringify(insertUndo.body).slice(0, 700));
+check('the created part is gone after the undo', (await existsAt('Workspace.MorphiE2ECreated')) === 'missing');
+check('the place still has its own script', (await existsAt(A)) === 'exists');
 
 // ---------------------------------------------------------------------------------------------
 // Cleanup — the place must not keep probe fixtures

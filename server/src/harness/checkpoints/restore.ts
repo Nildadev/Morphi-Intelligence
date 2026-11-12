@@ -8,6 +8,8 @@ import {
   inspectInstance,
   instanceExists,
   isCframeMarkerValue,
+  isNameValue,
+  isParentValue,
   readScriptSource,
   recreateInstance,
   sameCframe,
@@ -128,10 +130,24 @@ async function detectDrift(
   const notes: string[] = [];
   const postOf = (path: string): PostStateEntry | undefined =>
     postState?.entries.find((entry) => entry.path === path);
+  /**
+   * The post-state entry for a snapshot path, following a MOVE.
+   *
+   * A turn that renames or reparents an instance makes its snapshot path stop resolving, so the entry
+   * is recorded at the path the instance was found at afterwards, with `fromPath` naming the original
+   * (see `snapshotPostState`). Without following it, the undo of a rename would refuse its own change.
+   */
+  const postFor = (path: string): PostStateEntry | undefined =>
+    postOf(path)
+    ?? postState?.entries.find((entry) => entry.kind === 'properties' && entry.fromPath === path);
   for (const entry of snapshot.entries) {
     if (entry.kind === 'inserted') continue;
     if (entry.kind === 'properties') {
-      const live = await inspectInstance(mcp, entry.path, signal);
+      const post = postFor(entry.path);
+      // The instance may have MOVED: a rename or a reparent is the turn's own doing, so the snapshot
+      // path is gone by design and the live reads happen where the post-state found it.
+      const livePath = post !== undefined && post.kind === 'properties' ? post.path : entry.path;
+      const live = await inspectInstance(mcp, livePath, signal);
       if (live === null) {
         // The official server returns the bag from `inspect_instance`; if that failed we cannot
         // prove the instance is safe to overwrite, which is drift for a batch (turn) restore.
@@ -139,7 +155,6 @@ async function detectDrift(
         else notes.push(`Không đọc lại được thuộc tính của ${entry.path}; sẽ kiểm tra sau khi ghi.`);
         continue;
       }
-      const post = postOf(entry.path);
       // The name, the parent and the transform are not in the bag under their own keys, so they cannot
       // be compared like the scalars: they are read back once with `captureIdentity` and diffed. Without
       // this, a renamed/reparented/moved instance would read as drift (undefined vs marker) and its own
@@ -167,7 +182,7 @@ async function detectDrift(
         // Three cases, exactly like the scalars below: live == post means the turn's own value, invert
         // it; live == pre means already restored, a no-op; anything else was changed by hand, and
         // overwriting that is what the plan forbids.
-        const live = await captureIdentity(mcp, entry.path, signal);
+        const live = await captureIdentity(mcp, livePath, signal);
         const postMarkers = post !== undefined && post.kind === 'properties' ? post.properties : undefined;
         const atPre = identityDiff(entry.properties, live).length === 0;
         const atPost = postMarkers !== undefined && identityDiff(postMarkers, live).length === 0;
@@ -341,7 +356,7 @@ export async function applyRestore(
   let applied = 0;
 
   for (const step of snapshot.inverse) {
-    const done = await applyStep(mcp, step, signal, skipped);
+    const done = await applyStep(mcp, redirectStep(step, checkpoint.manifest.postState ?? null), signal, skipped);
     if (done === null) {
       applied += 1;
     } else {
@@ -352,6 +367,34 @@ export async function applyRestore(
   const status = failed.length === 0 ? 'restored' : 'restore-failed';
   checkpoints.setStatus(checkpointId, status);
   return { ok: true, result: { checkpointId, status, applied, failed, skipped } };
+}
+
+/**
+ * Where the instance will live once the recorded identity is applied, or null when the snapshot carries
+ * no name/parent marker (nothing will move it).
+ */
+function identityPathOf(properties: Record<string, unknown>): string | null {
+  const name = properties.Name;
+  const parent = properties.Parent;
+  if (!isNameValue(name) || !isParentValue(parent)) return null;
+  return `${parent.$parent}.${name.$name}`;
+}
+
+/**
+ * Point a property step at where the instance IS now.
+ *
+ * A rename or a reparent is applied back by writing `Name`/`Parent` markers, but those writes have to
+ * reach the instance at its current path — the snapshot path stopped resolving when the turn moved it.
+ * Only that one shape is redirected: a script cannot move, and a delete/recreate targets a path whose
+ * meaning is the path itself.
+ */
+function redirectStep(step: InverseStep, postState: PostStateSnapshot | null): InverseStep {
+  if (step.tool !== 'set_properties' || postState === null) return step;
+  const moved = postState.entries.find(
+    (entry) => entry.kind === 'properties' && entry.fromPath === step.path,
+  );
+  if (moved === undefined || moved.kind !== 'properties') return step;
+  return { ...step, path: moved.path };
 }
 
 /** One inverse step. Returns null on success, or a human-readable failure reason. */
@@ -374,6 +417,11 @@ async function applyStep(
     return live === step.source ? null : 'Đã ghi nhưng nội dung đọc lại không khớp bản sao.';
   }
   if (step.tool === 'delete_instance') {
+    // Something the turn created may have been removed by hand since. Deleting it again would be a
+    // failure reported against a workspace that is already correct; a probe that FAILED (null) is not
+    // "already gone", so only a definite false is treated as a no-op.
+    const exists = await instanceExists(mcp, step.path, signal);
+    if (exists === false) return null;
     try {
       const deleted = await deleteInstance(mcp, step.path, signal);
       return deleted ? null : 'Studio báo xoá thất bại.';
@@ -407,12 +455,17 @@ async function applyStep(
 
   // Same anti-lie rule as scripts: re-inspect and require the recorded values back. Only the keys the
   // server claims it assigned are checked — a refused key is reported, not counted as a mismatch.
-  const live = await inspectInstance(mcp, step.path, signal);
-  if (live === null) return 'Đã đặt thuộc tính nhưng không đọc lại được để xác nhận.';
+  //
+  // Read back where the instance is AFTER the write, not where it was before it: restoring a Name or a
+  // Parent moves it, and a verification at the old path would report "could not read" for a restore
+  // that actually landed (measured live on the rename scenario).
+  const finalPath = identityPathOf(step.properties) ?? step.path;
+  const live = await inspectInstance(mcp, finalPath, signal);
+  if (live === null) return `Đã đặt thuộc tính nhưng không đọc lại được ${finalPath} để xác nhận.`;
   const mismatched: string[] = [];
   let identity: CapturedIdentity | null | undefined;
   const liveIdentity = async (): Promise<CapturedIdentity | null> => {
-    identity ??= await captureIdentity(mcp, step.path, signal);
+    identity ??= await captureIdentity(mcp, finalPath, signal);
     return identity;
   };
   for (const key of written.applied) {
