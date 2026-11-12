@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { FileText, ShieldAlert, TriangleAlert } from '../icons';
 import type { PendingApproval } from '../../lib/chatReducer';
 import { vi } from '../../i18n/vi';
@@ -70,12 +70,19 @@ export function ApprovalModal({ approval, onDecision }: ApprovalModalProps) {
     // → showToast), nên một lần lỗi là ba nút + Escape tê liệt cho tới
     // `APPROVAL_TIMEOUT_MS = 120_000`. Chống trùng là việc của CHỦ REQUEST (người thấy kết quả),
     // xem `decidingRef` trong ChatInterface; modal chỉ là mặt input nên mọi lần bấm đều báo về.
-    const decide = (decision: 'allow' | 'deny', scope: 'once' | 'session', feedback?: string) =>
-        // Keep the legacy 3-argument call shape unless there is real feedback to carry; callers and
-        // tests pin the exact wire triple, not an extra `undefined`.
-        feedback === undefined
-            ? decideRef.current(approval.approvalId, decision, scope)
-            : decideRef.current(approval.approvalId, decision, scope, feedback);
+    // Memoised on the approval id only: the body reads the latest callback through `decideRef`, so this
+    // identity is stable for the whole life of one approval. That keeps the Escape/focus effect below
+    // from re-running on every parent re-render (which pulled focus back to the first button) while
+    // still letting `decide` be a real dependency instead of a closure the linter cannot verify.
+    const decide = useCallback(
+        (decision: 'allow' | 'deny', scope: 'once' | 'session', feedback?: string) =>
+            // Keep the legacy 3-argument call shape unless there is real feedback to carry; callers and
+            // tests pin the exact wire triple, not an extra `undefined`.
+            feedback === undefined
+                ? decideRef.current(approval.approvalId, decision, scope)
+                : decideRef.current(approval.approvalId, decision, scope, feedback),
+        [approval.approvalId],
+    );
     const titleId = `approval-title-${approval.approvalId}`;
 
     useEffect(() => {
@@ -124,7 +131,7 @@ export function ApprovalModal({ approval, onDecision }: ApprovalModalProps) {
             document.removeEventListener('keydown', onKeyDown);
             previous?.focus();
         };
-    }, [approval.approvalId]);
+    }, [approval.approvalId, decide]);
 
     if (plan !== null) {
         return (

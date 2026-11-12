@@ -31,7 +31,7 @@ export function chatReducer(state: ChatState, action: ChatUiAction): ChatState {
             return { ...initialChatState, messages: action.messages, error: action.error ?? null };
         case 'session/restore':
             return action.state;
-        case 'session/reload':
+        case 'session/reload': {
             // `queued` KHÔNG được quyết bằng độ dài danh sách nữa: fold sở hữu nó, và chỉ
             // `user/message source==='steer'` mới có quyền xoá chip (danh sách dài ra vì lý do khác —
             // ví dụ hàng của một tab khác — không nghĩa là inbox đã được rút cạn).
@@ -57,6 +57,7 @@ export function chatReducer(state: ChatState, action: ChatUiAction): ChatState {
                 ...(action.preserveDraft === true ? {} : { draft: emptyDraft() }),
                 ...(action.error !== undefined ? { error: action.error } : {}),
             };
+        }
         case 'session/undo':
             // Undo replaces the transcript with the shortened projection and clears the visible
             // error for the undone turn. `rowSeqById` is preserved for compaction matching.

@@ -18,7 +18,7 @@ function installBridge() {
             delete: vi.fn(async () => ({ ok: true })),
             status: vi.fn(async () => ({ persistent: true, providers: [] })),
         },
-        window: { command: vi.fn(async (_action: WindowCommand) => ({ ok: true })) },
+        window: { command: vi.fn(async (action: WindowCommand) => ({ ok: true, action })) },
         theme: { set: vi.fn() },
         accent: vi.fn(async () => ({ accent: '#4cc2ff', dark: true })),
         onAccent: vi.fn((callback: (data: { accent: string | null; dark: boolean }) => void) => {

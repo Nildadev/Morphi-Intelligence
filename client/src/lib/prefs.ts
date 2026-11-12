@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import { applyUiLanguage } from '../i18n/vi';
 
 /**
  * User preferences that live in `localStorage` (no server round-trip): the UI
@@ -23,6 +24,10 @@ export function getUiLanguage(): UiLanguage {
 
 export function setUiLanguage(lang: UiLanguage): void {
   localStorage.setItem(UI_LANG_KEY, lang);
+  // The dictionary is module-level state that components read WHILE rendering, so it is swapped here,
+  // in the event handler that changes the preference — never during render. The event below then
+  // re-renders everything that reads it.
+  applyUiLanguage(lang);
   window.dispatchEvent(new Event(UI_LANG_EVENT));
 }
 
@@ -38,6 +43,14 @@ function subscribeUiLanguage(callback: () => void): () => void {
 export function useUiLanguage(): UiLanguage {
   return useSyncExternalStore(subscribeUiLanguage, getUiLanguage, () => 'vi' as UiLanguage);
 }
+
+/**
+ * Apply the stored language ONCE, at import time, before the first render.
+ *
+ * An effect would paint the default language first and there is no second render to correct it; doing
+ * it in the component body instead is a side effect during render, which React forbids.
+ */
+applyUiLanguage(getUiLanguage());
 
 const AI_LANG_KEY = 'morphi.aiLang';
 const AI_LANG_EVENT = 'morphi:ai-lang';

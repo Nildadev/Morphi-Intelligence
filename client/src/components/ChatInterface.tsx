@@ -467,11 +467,14 @@ export const ChatInterface: React.FC = () => {
      */
     useEffect(() => {
         const intervalId = setInterval(() => { void checkMcp(); }, 5000);
+        // Read the ref ONCE, when the effect runs: the cleanup then aborts the controllers that belong
+        // to the tree this effect was mounted for, instead of whichever map exists at teardown.
+        const controllers = controllersRef.current;
         return () => {
             clearInterval(intervalId);
             // Unmount is app teardown: every live SSE belongs to this renderer, so abort them all
             // (the server's `res.on('close')` then stops the turns).
-            for (const controller of controllersRef.current.values()) controller.abort();
+            for (const controller of controllers.values()) controller.abort();
         };
     }, [checkMcp]);
 

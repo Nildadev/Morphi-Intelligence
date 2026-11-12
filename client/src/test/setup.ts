@@ -13,7 +13,6 @@ import '@testing-library/jest-dom/vitest';
  */
 declare global {
     // React 19 đọc biến toàn cục này để cho phép `act()` từ ngoài; types của nó không khai báo sẵn.
-    // eslint-disable-next-line no-var
     var IS_REACT_ACT_ENVIRONMENT: boolean;
 }
 

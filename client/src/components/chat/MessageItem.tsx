@@ -75,6 +75,11 @@ function isRuntimeNotice(message: DerivedMessage): boolean {
  */
 export function MessageItem({ message, toolProgress, isStreaming = false, onRegenerate, onOpenChildSession, onUndo, workedEntries, workedTotalMs, workedLive = false, hideActivity = false, hideTextStep = false, onUndoTurn, undoTurnBusy = false }: MessageItemProps) {
     const [copied, setCopied] = useState(false);
+    // Declared HERE, above the role early-returns: a hook called after an early return changes the
+    // hook order the moment a row's role changes (an optimistic user row replaced by the server copy),
+    // and React then throws "Rendered more hooks than during the previous render".
+    const [activityOpen, setActivityOpen] = useState(isStreaming);
+    const [prevStreaming, setPrevStreaming] = useState(isStreaming);
 
     const copyMessage = async () => {
         try {
@@ -156,8 +161,6 @@ export function MessageItem({ message, toolProgress, isStreaming = false, onRege
     // Codex shape: the worked block is the outer collapsible and closes once the turn settles, so a
     // finished turn reads as one line above the answer. Thinking rides inside as its OWN collapsed
     // block (ThinkingBlock), never merged into the tool list.
-    const [activityOpen, setActivityOpen] = useState(isStreaming);
-    const [prevStreaming, setPrevStreaming] = useState(isStreaming);
     if (prevStreaming !== isStreaming) {
         setPrevStreaming(isStreaming);
         setActivityOpen(isStreaming);

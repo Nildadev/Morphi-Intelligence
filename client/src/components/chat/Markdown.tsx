@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useState, type ReactElement, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -49,6 +49,16 @@ function CodeBlock({ language, code }: { language: string; code: string }) {
 
 type AnimateText = (children: unknown) => ReactNode;
 
+/**
+ * The props these components actually read. react-markdown hands over its own superset; typing the
+ * superset here would mean importing `Components` and casting at every entry, while the animation
+ * wrapper injects `animateText`, which react-markdown knows nothing about. A structural type states
+ * exactly what each component needs and keeps `className`/`href`/`children` checked.
+ */
+type InlineProps = { children?: ReactNode; animateText?: AnimateText };
+type LinkProps = InlineProps & { href?: string };
+type CodeProps = InlineProps & { className?: string };
+
 /** Only the text inside inline elements needs word animation; `animateText` is always supplied here. */
 function streamed(children: unknown, animateText?: AnimateText): ReactNode {
     return animateText ? animateText(children) : (children as ReactNode);
@@ -61,50 +71,50 @@ function streamed(children: unknown, animateText?: AnimateText): ReactNode {
  * Module scope keeps existing tokens (and their DOM nodes) alive so only appended text animates.
  */
 const MARKDOWN_COMPONENTS = {
-    p: ({ children, animateText }: any) => (
+    p: ({ children, animateText }: InlineProps) => (
         <p className="mb-4 last:mb-0 leading-6">{streamed(children, animateText)}</p>
     ),
-    li: ({ children, animateText }: any) => (
+    li: ({ children, animateText }: InlineProps) => (
         <li className="leading-6">{streamed(children, animateText)}</li>
     ),
-    strong: ({ children, animateText }: any) => (
+    strong: ({ children, animateText }: InlineProps) => (
         <strong className="font-semibold text-text-primary">{streamed(children, animateText)}</strong>
     ),
-    em: ({ children, animateText }: any) => <em>{streamed(children, animateText)}</em>,
-    a: ({ href, children, animateText }: any) => (
+    em: ({ children, animateText }: InlineProps) => <em>{streamed(children, animateText)}</em>,
+    a: ({ href, children, animateText }: LinkProps) => (
         <a href={href} className="text-brand-text underline underline-offset-2">{streamed(children, animateText)}</a>
     ),
-    blockquote: ({ children, animateText }: any) => (
+    blockquote: ({ children, animateText }: InlineProps) => (
         <blockquote className="mb-4 border-l-2 border-border pl-4 text-text-secondary">{streamed(children, animateText)}</blockquote>
     ),
-    h1: ({ children, animateText }: any) => (
+    h1: ({ children, animateText }: InlineProps) => (
         <h1 className="mb-3 mt-5 text-[22px] font-semibold leading-7 text-text-primary">{streamed(children, animateText)}</h1>
     ),
-    h2: ({ children, animateText }: any) => (
+    h2: ({ children, animateText }: InlineProps) => (
         <h2 className="mb-3 mt-5 text-[19px] font-semibold leading-6 text-text-primary">{streamed(children, animateText)}</h2>
     ),
-    h3: ({ children, animateText }: any) => (
+    h3: ({ children, animateText }: InlineProps) => (
         <h3 className="mb-2 mt-4 text-[17px] font-semibold leading-6 text-text-primary">{streamed(children, animateText)}</h3>
     ),
-    h4: ({ children, animateText }: any) => (
+    h4: ({ children, animateText }: InlineProps) => (
         <h4 className="mb-2 mt-4 text-[16px] font-semibold leading-6 text-text-primary">{streamed(children, animateText)}</h4>
     ),
-    ul: ({ children }: any) => <ul className="mb-4 list-disc space-y-1 pl-6">{children}</ul>,
-    ol: ({ children }: any) => <ol className="mb-4 list-decimal space-y-1 pl-6">{children}</ol>,
-    table: ({ children }: any) => (
+    ul: ({ children }: InlineProps) => <ul className="mb-4 list-disc space-y-1 pl-6">{children}</ul>,
+    ol: ({ children }: InlineProps) => <ol className="mb-4 list-decimal space-y-1 pl-6">{children}</ol>,
+    table: ({ children }: InlineProps) => (
         <div className="my-4 overflow-x-auto">
             <table className="w-full border-collapse text-[14px]">{children}</table>
         </div>
     ),
-    th: ({ children, animateText }: any) => (
+    th: ({ children, animateText }: InlineProps) => (
         <th className="border border-border bg-bg-inset px-3 py-1.5 text-left font-semibold text-text-primary">{streamed(children, animateText)}</th>
     ),
-    td: ({ children, animateText }: any) => (
+    td: ({ children, animateText }: InlineProps) => (
         <td className="border border-border px-3 py-1.5 align-top text-text-primary">{streamed(children, animateText)}</td>
     ),
     hr: () => <hr className="my-5 border-t border-border" />,
-    pre: ({ children }: any) => <>{children}</>,
-    code: ({ className, children: codeChildren, animateText }: any) => {
+    pre: ({ children }: InlineProps) => <>{children}</>,
+    code: ({ className, children: codeChildren, animateText }: CodeProps) => {
         const text = String(codeChildren).replace(/\n$/, '');
         const match = /language-(\w+)/.exec(className ?? '');
         if (match !== null || text.includes('\n')) {
@@ -136,8 +146,8 @@ function AnimatedChildren({ children, active }: { children: ReactNode; active: b
 }
 
 /** Stable wrappers: function identity must not change across streamed deltas. */
-function makeAnimatedComponent(component: any) {
-    return function AnimatedComponent(props: any) {
+function makeAnimatedComponent(component: (props: InlineProps) => ReactElement) {
+    return function AnimatedComponent(props: InlineProps) {
         const active = useContext(MarkdownActiveContext);
         const animateText: AnimateText = useCallback(
             (children: unknown) => <AnimatedChildren active={active}>{children as ReactNode}</AnimatedChildren>,
