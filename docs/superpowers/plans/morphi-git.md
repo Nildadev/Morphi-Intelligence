@@ -414,7 +414,7 @@ snapshot now captures the subtree BEFORE the destroy and the inverse is a recrea
 - `server tsc --noEmit` clean, and `server tsc --noEmit -p tsconfig.test.json` clean (test files are
   type-checked for the first time: 78 fixture errors were hiding behind untyped mocks, e.g. a
   `PostStateSnapshot` fixture without `created` and `McpGateway` stubs without `close`).
-- `server vitest` **818 passed / 5 skipped** (5 skip = live probe).
+- `server vitest` **820 passed / 5 skipped** (5 skip = live probe).
 - `MORPHI_LIVE_STUDIO=1 npx vitest run src/harness/checkpoints/liveProbe.test.ts` → **5/5 passed**
   on real `Place1` (script restore snapshot→mutate→undo→read-back; property restore incl. string
   `CollisionGroup` + `skipped`; Vector3/BrickColor reconstruction restored and re-inspected).
@@ -431,6 +431,9 @@ snapshot now captures the subtree BEFORE the destroy and the inverse is a recrea
   the window leaves **no** `Morphi Intelligence`/server/Studio-MCP process behind and no `morphi.db-wal`.
   The final portable step fails on this machine at `winCodeSign` extraction ("Cannot create symbolic link"):
   it needs an elevated shell or Developer Mode. The unpacked build is unaffected.
+- `node server/scripts/api-junk.mjs` → **API JUNK OK**: 741 malformed requests across 31 routes, no 5xx.
+  The first run found 71 (all bare `null`/`42`/`"text"` bodies answered 500 `INTERNAL_ERROR` because the
+  error middleware ignored body-parser's `entity.parse.failed`; now 400 `INVALID_JSON`).
 - `node server/scripts/quit-check.mjs` → **QUIT CHECK OK**: the real server exits 0 on the IPC shutdown
   message and closes SQLite (no `-wal`/`-shm` left). A Windows `child.kill()` skips that path entirely
   and leaves both sidecars behind (measured).

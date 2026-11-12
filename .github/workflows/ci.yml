@@ -54,3 +54,9 @@ jobs:
       - name: Verify the server quits cleanly
         working-directory: server
         run: node scripts/quit-check.mjs
+
+      # Boots a server on a scratch database and sends 741 malformed requests at every route: any 5xx
+      # means a handler trusted a shape the schema did not enforce.
+      - name: Sweep the API with malformed input
+        working-directory: server
+        run: node scripts/api-junk.mjs
