@@ -3,6 +3,7 @@ const path = require('node:path');
 const { startBackend } = require('./main/backend');
 const { createCredentialStore } = require('./main/credentials');
 const { assertTrustedSender, registerIpc } = require('./main/ipc');
+const { createFatalReporter } = require('./main/fatal');
 
 const RESTART_DELAYS_MS = [1000, 3000, 8000];
 const STARTUP_ERROR_TITLE = 'Không thể khởi động server';
@@ -241,6 +242,25 @@ function startServer() {
             // SERVER_EXITED_* is handled by onServerExit so the restart policy applies.
         });
 }
+
+/**
+ * Nothing in a packaged app sees a failure here: there is no console, so an unhandled rejection (a keyring
+ * call, a restart timer, an IPC handler returning a rejected promise) used to vanish without a window or a
+ * line of output. Record it to `crash.log` beside the database -- credentials redacted -- and, once a window
+ * exists, say so once instead of appearing to hang.
+ */
+const reportFatal = createFatalReporter({
+    logPath: path.join(app.getPath('userData'), 'crash.log'),
+    onReport: (kind, detail) => {
+        if (app.isReady()) {
+            // The first line only: the dialog is a notification, and `crash.log` holds the stack.
+            const headline = detail.split(String.fromCharCode(10))[0];
+            dialog.showErrorBox('Morphi gặp lỗi không mong đợi', `${kind}: ${headline}`);
+        }
+    },
+});
+process.on('uncaughtException', (error) => reportFatal('uncaughtException', error));
+process.on('unhandledRejection', (reason) => reportFatal('unhandledRejection', reason));
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 

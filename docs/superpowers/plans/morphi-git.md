@@ -432,6 +432,9 @@ snapshot now captures the subtree BEFORE the destroy and the inverse is a recrea
   the window leaves **no** `Morphi Intelligence`/server/Studio-MCP process behind and no `morphi.db-wal`.
   The final portable step fails on this machine at `winCodeSign` extraction ("Cannot create symbolic link"):
   it needs an elevated shell or Developer Mode. The unpacked build is unaffected.
+- A real Electron process records a process-level failure: `main/fatal.js` + `main.js` handlers wrote
+  `[ts] unhandledRejection: Error: probe rejection with key ***` to `crash.log` (measured with a throwaway
+  Electron probe app; the credential was redacted, the stack indented under its entry).
 - `node server/scripts/api-junk.mjs` → **API JUNK OK**: 741 malformed requests across 31 routes, no 5xx.
   The first run found 71 (all bare `null`/`42`/`"text"` bodies answered 500 `INTERNAL_ERROR` because the
   error middleware ignored body-parser's `entity.parse.failed`; now 400 `INVALID_JSON`).
