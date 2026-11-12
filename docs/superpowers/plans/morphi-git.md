@@ -426,6 +426,11 @@ snapshot now captures the subtree BEFORE the destroy and the inverse is a recrea
 - `client tsc --noEmit` clean; `client eslint` 0 errors (19 warnings, each with its reason in
   `eslint.config.js`); `client vitest` **634 passed**; `client vite build` ok.
 - `client playwright` **13/13 passed** (golden paths, shell surfaces, contrast + retired-idiom gates).
+- Packaged build (`npm run dist`): `dist_electron/win-unpacked/Morphi Intelligence.exe` launches, boots the
+  server child on an OS-assigned port, renders the shell against the real `%APPDATA%` database, and closing
+  the window leaves **no** `Morphi Intelligence`/server/Studio-MCP process behind and no `morphi.db-wal`.
+  The final portable step fails on this machine at `winCodeSign` extraction ("Cannot create symbolic link"):
+  it needs an elevated shell or Developer Mode. The unpacked build is unaffected.
 - `node server/scripts/quit-check.mjs` → **QUIT CHECK OK**: the real server exits 0 on the IPC shutdown
   message and closes SQLite (no `-wal`/`-shm` left). A Windows `child.kill()` skips that path entirely
   and leaves both sidecars behind (measured).

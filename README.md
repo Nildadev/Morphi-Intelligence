@@ -1,87 +1,120 @@
 # Morphi Intelligence
 
-> **v1.0.5-release-beta** | Roblox Studio AI Orchestrator
+Desktop app for Roblox development: a chat client that drives Roblox Studio through the official Model
+Context Protocol server, with a git-like history over every write it makes to your place.
 
-Morphi is a powerful, AI-driven assistant designed specifically for Roblox development. It integrates directly with Roblox Studio using the Model Context Protocol (MCP), providing real-time coding assistance, system design, and debugging through a sleek, ChatGPT-inspired interface.
+Current version: **1.1.0**.
 
-![Morphi Banner](https://i.ibb.co/6RMCF4zh/Black-and-Dark-Space-Photo-You-Tube-Thumbnail.png)
+## Requirements
 
----
+- Windows 10/11 (the packaged build is a portable executable)
+- Node.js `^20.19.0 || >=22.12.0` and npm 10
+- Roblox Studio with its built-in MCP server enabled (see [Roblox Studio](#roblox-studio))
 
-## 🚀 Key Features
+## Run it
 
-- **Roblox Studio Integration (MCP)**: Talk directly to your Studio environment. Perform file operations, execute commands, and query system states via a secure connection.
-- **ChatGPT-Inspired UI**: A modern, minimal, and premium interface built with React, Framer Motion, and Tailwind CSS.
-- **Dynamic Model Selection**: Integration with top-tier AI models from OpenAI (GPT-4o), Google (Gemini 2.0 Flash/Pro), and more.
-- **Project & Session Management**: Organize your work into distinct projects and searchable chat sessions with a flat, intuitive sidebar.
-- **Code Intelligence**: Built-in syntax highlighting, one-click copy, and specialized "Suggestion Chips" for common Roblox scripting tasks.
-- **Robust Error Handling**: Real-time toast notifications and inline error reporting to keep your workflow smooth.
-- **Customizable Appearance**: Native support for Light and Dark modes with smooth transitions.
+```bash
+npm ci
+npm ci --prefix server
+npm ci --prefix client
 
-## 🛠️ Tech Stack
+npm run dev
+```
 
-- **Frontend**: [React](https://reactjs.org/), [Vite](https://vitejs.dev/), [Tailwind CSS](https://tailwindcss.com/)
-- **Backend**: [Node.js](https://nodejs.org/), [Express](https://expressjs.com/), [Better-SQLite3](https://github.com/WiseLibs/better-sqlite3)
-- **Desktop**: [Electron](https://www.electronjs.org/)
-- **Protocol**: [Model Context Protocol (MCP)](https://modelcontextprotocol.io/)
-- **Animations**: [Framer Motion](https://www.framer.com/motion/)
-- **Icons**: [Lucide React](https://lucide.dev/)
+`npm run dev` starts the API on `http://127.0.0.1:3000` and the client on `http://localhost:5173`.
+In development the server accepts the token `dev-token` in an `X-Morphi-Token` header; the packaged
+app generates a fresh token per launch and hands it to the window over IPC.
 
-## 📦 Installation & Setup
+There is no supported headless mode: the server asks the Electron main process for provider keys, so
+`npm run dev` is for UI and API work only.
 
-### Prerequisites
-- [Node.js](https://nodejs.org/) (v20+ recommended)
-- [Roblox Studio](https://www.roblox.com/create)
+## Roblox Studio
 
-### Steps
+Morphi talks only to the MCP server shipped inside Roblox Studio, resolved in this order:
 
-1. **Clone the repository**:
-   ```bash
-   git clone https://github.com/Nildadev/Morphi-Intelligence.git
-   cd Morphi-Intelligence
-   ```
+1. `%LOCALAPPDATA%\Roblox\mcp.bat`
+2. `%LOCALAPPDATA%\Roblox\Versions\version-*\StudioMCP.exe`
+3. the `ContentFolder\..\StudioMCP.exe` path recorded in the registry
+4. an official `rbx-studio-mcp` binary on `PATH`
 
-2. **Install dependencies**:
-   ```bash
-   npm install
-   cd client && npm install
-   cd ../server && npm install
-   ```
+No `npx`, no npm-pinned MCP package, no third-party plugin; nothing is downloaded to make MCP work.
 
-3. **Configure Environment Variables**:
-   Create a `.env` file in the `server` directory and add your API keys:
-   ```env
-   OPENAI_API_KEY=your_key_here
-   GEMINI_API_KEY=your_key_here
-   OPENROUTER_API_KEY=your_key_here
-   # Optional: DEEPSEEK_API_KEY, GROQ_API_KEY, MISTRAL_API_KEY, XAI_API_KEY, CEREBRAS_API_KEY, TOGETHER_API_KEY
-   ```
-   In the packaged app, keys are entered in Settings and stored in the OS keyring instead.
+1. Open Roblox Studio with a place open.
+2. Studio › Assistant › **Manage MCP Servers** › enable the server.
+3. In Morphi, Settings › MCP › **Reconnect**. The panel must say the Studio server is linked; when it
+   is not, it prints the path it tried and the last error.
 
-4. **Build & Start**:
-   ```bash
-   # Build both client and server
-   npm run build
-   
-   # Run the Electron app
-   npm start
-   ```
+The same panel accepts a manual override path, validated against the list above before it is saved to
+`settings.json`.
 
-## 🎮 Roblox Studio Setup
+## Where data lives
 
-To enable AI orchestration, you must install and activate the **Morphi MCP Plugin** in Roblox Studio.
+`%APPDATA%\MorphiIntelligence`:
 
-1. Open Roblox Studio.
-2. Ensure the plugin is set to **ON** in the Plugins tab.
-3. The Morphi desktop app will automatically detect and connect to the Studio session.
+| File | Contents |
+| --- | --- |
+| `morphi.db` | SQLite: projects, sessions, and the append-only event log that chat history and undo derive from |
+| `settings.json` | UI preferences, MCP path override, title model, provider priority, compaction thresholds |
+| `credentials.json` | Provider keys, encrypted with Electron `safeStorage` (Windows DPAPI) |
 
-## 🛡️ License
+## Security model
 
-This project is licensed under the [ISC License](LICENSE).
+- The server binds to `127.0.0.1` on an OS-assigned port; nothing listens on a routable address.
+- Every `/api` request needs `X-Morphi-Token`, a token generated per launch and passed to the renderer
+  over IPC — a token is never written to disk or into a URL.
+- Provider keys live in `credentials.json` encrypted by `safeStorage`, are read only by the Electron
+  main process, and reach the server through the IPC channel. They never enter `localStorage`, a
+  renderer bundle, or a log line.
+- Writes to your place go through the tool approval gate: every mutating tool call pauses for an
+  approve/deny decision, and a denied call is recorded as denied, not as a failure.
+- The database is event-sourced. A legacy pre-1.1 database is renamed to `morphi.db.v1.bak` (with its
+  WAL/SHM) before a fresh schema is created, so an upgrade never mixes two generations of rows.
+- No telemetry, no analytics endpoint, no crash reporter. The only outbound traffic is the model
+  provider you configured and Studio's local MCP server.
 
-## 🙏 Acknowledgments
+## Tests
 
-- **Roblox Studio MCP**: Morphi talks only to the official MCP server shipped inside Roblox Studio (or the official `rbx-studio-mcp` binary). No third-party bridge, no `npx`, no npm-pinned MCP server.
+```bash
+npm run typecheck                       # server, test files, client build
+npm run lint                            # client ESLint
+npm test                                # server (vitest) + client (vitest)
+npm --prefix client run e2e             # Playwright; needs `npx playwright install`
+npm run test:main                       # Electron main process (node:test)
+node server/scripts/quit-check.mjs      # real server quits over IPC: exit 0, SQLite closed
+```
 
----
-*Created by **Nildadev** | Morphi Intelligence*
+The server suite keeps a live Studio probe and an end-to-end undo run behind `MORPHI_LIVE_STUDIO=1`:
+the probe is skipped without it, and the e2e script needs a real Studio session plus the fake-LLM server
+described in `server/scripts/e2e-live-undo.mjs`.
+
+## Build a release
+
+```bash
+npm run dist
+```
+
+Artifacts: `dist_electron/win-unpacked/Morphi Intelligence.exe` and a portable executable. The final
+portable step needs permission to create symlinks while extracting `winCodeSign`, so run it from an
+elevated shell or with Windows Developer Mode on; without that privilege the unpacked build is still
+produced and runs.
+
+## Known limitations
+
+- Studio's MCP server is beta: it goes away when Studio closes the place, and the app can only report a
+  lost connection, not restore it.
+- Undo refuses rather than guesses. If an instance the turn touched was renamed, moved or re-parented by
+  hand since the turn, the whole turn is refused with the reason and nothing is written.
+- Capture is bounded: an instance tree to 200 nodes and 4 levels, a listing to 400 nodes and 5 levels.
+  Past a bound the tree is dropped rather than captured approximately, and that turn reports
+  non-restorable instead of restorable-from-a-partial-picture.
+- `Terrain` and properties Studio locks to plugins are not restorable; they are listed as skipped for
+  the turn.
+
+## License
+
+ISC. See [LICENSE](LICENSE).
+
+## Acknowledgments
+
+- Roblox's own MCP server, the only bridge Morphi uses.
+- [Model Context Protocol](https://modelcontextprotocol.io/) for the protocol itself.
