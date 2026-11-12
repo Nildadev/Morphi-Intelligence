@@ -3,6 +3,7 @@ import type { CheckpointStore, WorkspaceCheckpoint } from './store';
 import { isRestorable, type PostStateEntry, type PostStateSnapshot, type PreStateSnapshot } from './snapshot';
 import {
   captureCframe,
+  captureIdentity,
   deleteInstance,
   inspectInstance,
   instanceExists,
@@ -11,8 +12,10 @@ import {
   recreateInstance,
   sameCframe,
   setInstanceProperties,
+  sameIdentity,
   writeScriptSource,
   type CapturedCframe,
+  type CapturedIdentity,
   type CframeValue,
   type InverseStep,
   type PropertyWriteResult,
@@ -137,36 +140,43 @@ async function detectDrift(
         continue;
       }
       const post = postOf(entry.path);
-      // A CFrame is not in the bag under its own key (it arrives as the pseudo-paths
-      // `CFrame.Position`/`CFrame.Rotation`), so it cannot be compared like the scalars: it is read
-      // back with `captureCframe` and diffed as a matrix. Without this every moved part would read as
-      // drift (undefined vs marker) and its own undo would be refused.
-      const cframeKeys = new Set<string>(['CFrame', 'WorldPivot']);
-      const liveCframe = (): Promise<CapturedCframe | null> => captureCframe(mcp, entry.path, signal);
-      const scalarKeys = (source: Record<string, unknown>): string[] =>
-        Object.keys(source).filter((key) => !cframeKeys.has(key));
-      const cframeKeyOf = (source: Record<string, unknown>): string | undefined =>
-        Object.keys(source).find((key) => cframeKeys.has(key));
-
-      if (cframeKeyOf(entry.properties) !== undefined) {
-        // Three cases, exactly like the scalars below (see the module note): live == post means the
-        // turn's own transform, invert it; live == pre means already restored, a no-op; anything else
-        // means it was moved or rotated by hand, and overwriting that is what the plan forbids.
-        const liveTransform = await liveCframe();
-        const preKey = cframeKeyOf(entry.properties) ?? '';
-        const postKey = post !== undefined && post.kind === 'properties' ? cframeKeyOf(post.properties) : undefined;
-        const preMarker = entry.properties[preKey];
-        const postMarker = postKey === undefined || post === undefined || post.kind !== 'properties'
-          ? undefined
-          : post.properties[postKey];
-        const atPre = sameCframe(preMarker as CframeValue, liveTransform);
-        const atPost = postMarker !== undefined && sameCframe(postMarker as CframeValue, liveTransform);
-        const clean = postMarker === undefined ? !atPre : atPost;
+      // The name, the parent and the transform are not in the bag under their own keys, so they cannot
+      // be compared like the scalars: they are read back once with `captureIdentity` and diffed. Without
+      // this, a renamed/reparented/moved instance would read as drift (undefined vs marker) and its own
+      // undo would be refused.
+      const identityDiff = (markers: Record<string, unknown>, live: CapturedIdentity | null): string[] => {
+        const differing: string[] = [];
+        for (const key of IDENTITY_KEYS) {
+          const marker = markers[key];
+          if (marker === undefined) continue;
+          if (live === null) {
+            differing.push(key);
+            continue;
+          }
+          if (key === 'Name' || key === 'Parent') {
+            if (!sameIdentity(markers.Name, markers.Parent, live)) differing.push(key);
+            continue;
+          }
+          if (!sameCframe(marker as CframeValue, live.cframe)) differing.push(key);
+        }
+        return differing;
+      };
+      const hasIdentity = IDENTITY_KEYS.some((key) => key in entry.properties)
+        || (post !== undefined && post.kind === 'properties' && IDENTITY_KEYS.some((key) => key in post.properties));
+      if (hasIdentity) {
+        // Three cases, exactly like the scalars below: live == post means the turn's own value, invert
+        // it; live == pre means already restored, a no-op; anything else was changed by hand, and
+        // overwriting that is what the plan forbids.
+        const live = await captureIdentity(mcp, entry.path, signal);
+        const postMarkers = post !== undefined && post.kind === 'properties' ? post.properties : undefined;
+        const atPre = identityDiff(entry.properties, live).length === 0;
+        const atPost = postMarkers !== undefined && identityDiff(postMarkers, live).length === 0;
+        const clean = postMarkers === undefined ? !atPre : atPost;
         if (!clean) {
           if (atPre) {
-            notes.push(`${entry.path} đang ở đúng vị trí cũ — không có gì để khôi phục.`);
+            notes.push(`${entry.path} đang mang đúng tên/vị trí cũ — không có gì để khôi phục.`);
           } else {
-            const message = `${entry.path} đã bị di chuyển/xoay tay sau lượt này — không ghi đè lên thay đổi đó.`;
+            const message = `${entry.path} đã bị đổi tên, chuyển chỗ hoặc di chuyển tay sau lượt này — không ghi đè lên thay đổi đó.`;
             if (strict) drift.push(message);
             else notes.push(message);
           }
@@ -246,7 +256,15 @@ async function detectDrift(
   return { drift, notes };
 }
 
-/** Structural equality good enough for a Studio property bag (arrays and plain objects). */
+/** Keys whose value is captured outside the bag (see `identityMarkers`). */
+const IDENTITY_KEYS = ['Name', 'Parent', 'CFrame', 'WorldPivot'] as const;
+
+/** Keys excluded from the scalar comparison, because they are markers handled above. */
+function scalarKeys(source: Record<string, unknown>): string[] {
+  return Object.keys(source).filter(
+    (key) => !key.includes('.') && !(IDENTITY_KEYS as readonly string[]).includes(key),
+  );
+}
 function sameValue(left: unknown, right: unknown): boolean {
   if (left === right) return true;
   if (typeof left === 'number' && typeof right === 'number') return Math.abs(left - right) < 1e-9;
@@ -392,12 +410,22 @@ async function applyStep(
   const live = await inspectInstance(mcp, step.path, signal);
   if (live === null) return 'Đã đặt thuộc tính nhưng không đọc lại được để xác nhận.';
   const mismatched: string[] = [];
+  let identity: CapturedIdentity | null | undefined;
+  const liveIdentity = async (): Promise<CapturedIdentity | null> => {
+    identity ??= await captureIdentity(mcp, step.path, signal);
+    return identity;
+  };
   for (const key of written.applied) {
     const before = step.properties[key];
     if (isCframeMarkerValue(before)) {
       // A transform has no bag entry of its own: compare the matrix, not `live['CFrame']`.
-      const after = await captureCframe(mcp, step.path, signal);
+      const after = (await liveIdentity())?.cframe ?? null;
       if (!sameCframe(before, after)) mismatched.push(key);
+      continue;
+    }
+    if (key === 'Name' || key === 'Parent') {
+      // The bags carry neither, so the read-back is the identity capture.
+      if (!sameIdentity(step.properties.Name, step.properties.Parent, await liveIdentity())) mismatched.push(key);
       continue;
     }
     if (!sameValue(live[key], before)) mismatched.push(key);

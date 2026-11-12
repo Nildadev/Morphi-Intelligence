@@ -552,7 +552,7 @@ describe('restore of a MOVED part (CFrame)', () => {
         }
         const code = String(record.code ?? '');
         if (code.includes('GetComponents')) {
-          return JSON.stringify({ key: 'CFrame', components: live.$cframe.components });
+          return JSON.stringify({ key: 'CFrame', components: live.$cframe.components, name: 'Part', parentPath: 'Workspace' });
         }
         const match = /CFrame\.new\(([^)]*)\)/.exec(code);
         if (match !== null) {

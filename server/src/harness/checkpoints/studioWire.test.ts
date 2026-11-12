@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { McpGateway, ToolSchema } from '../tools/types';
 import {
   captureCframe,
+  captureIdentity,
   captureInstanceTree,
   deleteInstance,
   inspectInstance,
@@ -12,6 +13,7 @@ import {
   readScriptSource,
   restorableProperties,
   sameCframe,
+  sameIdentity,
   scriptSourceFrom,
   setInstanceProperties,
   writeScriptSource,
@@ -568,7 +570,9 @@ describe('reconstructValue - BrickColor is left out on purpose', () => {
 });
 
 describe('captureCframe / reconstructValue - the transform', () => {
-  const json = (key: string, components: number[]) => JSON.stringify({ key, components });
+  // The capture reports the whole identity: name, parent path and the transform in one round trip.
+  const json = (key: string, components: number[], name = 'Part') =>
+    JSON.stringify({ key, components, name, parentPath: 'Workspace' });
 
   it('reads the twelve components of a Part CFrame', async () => {
     const mcp = rawGateway({
@@ -587,10 +591,14 @@ describe('captureCframe / reconstructValue - the transform', () => {
     expect((await captureCframe(mcp, 'Workspace.Model'))?.key).toBe('WorldPivot');
   });
 
-  it('answers null for an instance with no transform, so no member is invented', async () => {
-    // A Script/Folder/ScreenGui has neither CFrame nor WorldPivot; writing one would fail the restore.
-    const mcp = rawGateway({ execute_luau: () => 'none' });
+  it('reports no transform for an instance that owns none, so no member is invented', async () => {
+    // A Script/Folder/ScreenGui has neither CFrame nor WorldPivot; writing one would fail the restore,
+    // but its NAME and PARENT are still restorable — that is the identity, and it is all it has.
+    const mcp = rawGateway({ execute_luau: () => JSON.stringify({ name: 'Main', parentPath: 'ServerScriptService' }) });
     expect(await captureCframe(mcp, 'ServerScriptService.Main')).toBeNull();
+    expect(await captureIdentity(mcp, 'ServerScriptService.Main')).toEqual({
+      name: 'Main', parentPath: 'ServerScriptService', cframe: null,
+    });
   });
 
   it('answers null when the read itself failed', async () => {
@@ -613,5 +621,45 @@ describe('captureCframe / reconstructValue - the transform', () => {
     expect(sameCframe(marker, { key: 'CFrame', components: [1, 2, 4, 1, 0, 0, 0, 1, 0, 0, 0, 1], position: [1, 2, 4] })).toBe(false);
     expect(sameCframe(marker, null)).toBe(false);
     expect(sameCframe(undefined, { key: 'CFrame', components: [1, 2, 3, 1, 0, 0, 0, 1, 0, 0, 0, 1], position: [1, 2, 3] })).toBe(false);
+  });
+});
+
+describe('identity - a rename and a reparent both have an inverse', () => {
+  it('writes the recorded Name as a string literal', async () => {
+    const mcp = rawGateway({ execute_luau: () => JSON.stringify({ applied: ['Name'], failed: [] }) });
+    await setInstanceProperties(mcp, 'Workspace.Part', { Name: { $name: 'OldPart' } });
+    expect(String(mcp.calls[0]?.args.code)).toContain('attempt("Name", "OldPart")');
+  });
+
+  it('resolves Parent to an INSTANCE, never to the path string', async () => {
+    // MEASURED: `inst.Parent = "Workspace"` fails with "Instance expected, got string", which made a
+    // reparent silently un-undoable.
+    const mcp = rawGateway({ execute_luau: () => JSON.stringify({ applied: ['Parent'], failed: [] }) });
+    const written = await setInstanceProperties(mcp, 'Workspace.Folder.Part', { Parent: { $parent: 'ReplicatedStorage.Assets' } });
+    const code = String(mcp.calls[0]?.args.code);
+    expect(code).toContain('inst.Parent = rootP');
+    expect(code).toContain('{"ReplicatedStorage", "Assets"}');
+    expect(code).not.toContain('attempt("Parent"');
+    expect(written.applied).toEqual(['Parent']);
+  });
+
+  it('reports a missing parent instead of claiming the move landed', async () => {
+    const mcp = rawGateway({ execute_luau: () => JSON.stringify({ applied: [], failed: [{ key: 'Parent', reason: 'không tìm thấy đối tượng cha' }] }) });
+    const written = await setInstanceProperties(mcp, 'A.B', { Parent: { $parent: 'Gone.AlsoGone' } });
+    expect(written.applied).toEqual([]);
+    expect(written.skipped[0]).toMatchObject({ key: 'Parent' });
+  });
+
+  it('compares name and parent in the identity capture', async () => {
+    const live = { name: 'NewPart', parentPath: 'ServerStorage', cframe: null };
+    expect(sameIdentity({ $name: 'OldPart' }, { $parent: 'Workspace' }, live)).toBe(false);
+    expect(sameIdentity({ $name: 'NewPart' }, { $parent: 'ServerStorage' }, live)).toBe(true);
+    expect(sameIdentity({ $name: 'OldPart' }, undefined, live)).toBe(false);
+    expect(sameIdentity(undefined, undefined, null)).toBe(false);
+  });
+
+  it('keeps the identity markers out of the scalar filter', async () => {
+    const bag = restorableProperties({ Anchored: true, Name: { $name: 'X' }, Parent: { $parent: 'Workspace' } });
+    expect(bag).toEqual({ Anchored: true, Name: { $name: 'X' }, Parent: { $parent: 'Workspace' } });
   });
 });

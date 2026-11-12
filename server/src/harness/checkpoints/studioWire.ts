@@ -282,16 +282,18 @@ export async function writeScriptSource(
  *    name it does not own throws in Roblox, so a lookup of a *missing* path raised an error and the
  *    caller could not distinguish "gone" from "failed".
  */
-function resolveLuau(path: string): string {
+function resolveLuau(path: string, suffix = ''): string {
   const segments = path.split('.');
+  const segs = `segs${suffix}`;
+  const root = `root${suffix}`;
   // Luau table literal, NOT JSON: `["a","b"]` is a parse error ("Failed to parse command code").
   const segsLiteral = `{${segments.map((segment) => JSON.stringify(segment)).join(', ')}}`;
-  return `local segs = ${segsLiteral}\n`
-    + 'local ok, first = pcall(function() return game:GetService(segs[1]) end)\n'
-    + 'local root = ok and first or game:FindFirstChild(segs[1])\n'
-    + 'for i = 2, #segs do\n'
-    + '  if root == nil then break end\n'
-    + '  root = root:FindFirstChild(segs[i])\n'
+  return `local ${segs} = ${segsLiteral}\n`
+    + `local ok${suffix}, first${suffix} = pcall(function() return game:GetService(${segs}[1]) end)\n`
+    + `local ${root} = ok${suffix} and first${suffix} or game:FindFirstChild(${segs}[1])\n`
+    + `for i = 2, #${segs} do\n`
+    + `  if ${root} == nil then break end\n`
+    + `  ${root} = ${root}:FindFirstChild(${segs}[i])\n`
     + 'end\n';
 }
 
@@ -362,6 +364,40 @@ export interface CframeValue {
   $cframe: { key: 'CFrame' | 'WorldPivot'; components: number[]; position: number[] };
 }
 
+/**
+ * Identity of an instance: what it is CALLED and WHOM it hangs under.
+ *
+ * Neither is in the property bag at all (the tool reports `Name` as a top-level field and never
+ * reports `Parent`), so without capturing them a rename or a reparent had no inverse while the
+ * checkpoint still claimed `restorable` — the worst kind of gap: the undo looked complete.
+ */
+export interface CapturedIdentity {
+  name: string;
+  /** Dot path of the parent, or null at the DataModel root (a service has no restorable parent). */
+  parentPath: string | null;
+  cframe: CapturedCframe | null;
+}
+
+/** Marker for a captured name; a JSON string literal is all the restore needs. */
+export interface NameValue {
+  $name: string;
+}
+
+/** Marker for a captured parent path; the restore resolves it back to an instance. */
+export interface ParentValue {
+  $parent: string;
+}
+
+export function isNameValue(value: unknown): value is NameValue {
+  if (value === null || typeof value !== 'object') return false;
+  return typeof (value as { $name?: unknown }).$name === 'string';
+}
+
+export function isParentValue(value: unknown): value is ParentValue {
+  if (value === null || typeof value !== 'object') return false;
+  return typeof (value as { $parent?: unknown }).$parent === 'string';
+}
+
 function isCframeValue(value: unknown): value is CframeValue {
   if (value === null || typeof value !== 'object') return false;
   const marker = (value as { $cframe?: unknown }).$cframe;
@@ -399,11 +435,14 @@ export function restorableProperties(bag: Record<string, unknown>): Record<strin
   const restorable: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(bag)) {
     if (key.includes('.')) continue;
-    if (NEVER_WRITABLE.has(key)) continue;
-    if (isCframeValue(value)) {
+    // Markers are checked BEFORE the deny list: `Parent` is denied as a scalar (a plain string there
+    // fails with "Instance expected, got string"), but the captured-parent marker is exactly the form
+    // the restore can apply.
+    if (isCframeValue(value) || isNameValue(value) || isParentValue(value)) {
       restorable[key] = value;
       continue;
     }
+    if (NEVER_WRITABLE.has(key)) continue;
     const type = typeof value;
     if (type === 'number' || type === 'boolean' || type === 'string') restorable[key] = value;
   }
@@ -449,6 +488,7 @@ const NEVER_WRITABLE: ReadonlySet<string> = new Set([
  * so a misparse cannot silently write a wrong value (it just fails the pcall and stays skipped).
  */
 export function reconstructValue(value: unknown, key?: string): string {
+  if (isNameValue(value)) return JSON.stringify(value.$name);
   if (isCframeValue(value)) {
     // Twelve components: position then the 3x3 rotation, which is exactly the shape
     // `CFrame.new(x, y, z, R00, R01, R02, R10, R11, R12, R20, R21, R22)` takes.
@@ -516,8 +556,24 @@ export async function setInstanceProperties(
   // `reconstructValue` recovers Vector3/Color3/BrickColor literals from the lossy serialisation where
   // possible; any value it cannot recover stays a plain string, which the pcall rejects → skipped.
   const attempts = Object.entries(properties)
+    .filter(([, value]) => !isParentValue(value))
     .map(([key, value]) => `attempt(${JSON.stringify(key)}, ${reconstructValue(value, key)})`)
     .join('\n');
+  // `Parent` is the one key whose value is an INSTANCE, not a literal: it is resolved from the
+  // recorded dot path and assigned separately. Passing the path as a string would fail every time
+  // ("Instance expected, got string"), which is how a reparent used to be silently un-undoable.
+  const parentMarker = properties.Parent;
+  const parentLines = isParentValue(parentMarker)
+    ? [
+        resolveLuau(parentMarker.$parent, 'P'),
+        'if rootP == nil then table.insert(failed, { key = "Parent", reason = "không tìm thấy đối tượng cha" })',
+        'else',
+        '  local okParent, errParent = pcall(function() inst.Parent = rootP end)',
+        '  if okParent then table.insert(applied, "Parent")',
+        '  else table.insert(failed, { key = "Parent", reason = tostring(errParent) }) end',
+        'end',
+      ].join('\n')
+    : '';
   const code = [
     resolveLuau(path),
     'local inst = root',
@@ -535,7 +591,10 @@ export async function setInstanceProperties(
     '  if ok then table.insert(applied, key)',
     '  else table.insert(failed, { key = key, reason = tostring(err) }) end',
     'end',
+    // The name goes FIRST: a later step addresses this instance by its recorded path, and a rename in
+    // the middle of the batch would make those lookups miss.
     attempts,
+    parentLines,
     'return game:GetService("HttpService"):JSONEncode({ applied = applied, failed = failed })',
   ].join('\n');
 
@@ -792,32 +851,40 @@ export async function instanceExists(
  * transform, and inventing one would make the restore write a member that does not exist. A failed
  * Luau read is null too: "cannot read" must never become "no transform to restore".
  */
-export async function captureCframe(
+export async function captureIdentity(
   mcp: McpGateway,
   path: string,
   signal?: AbortSignal,
-): Promise<CapturedCframe | null> {
+): Promise<CapturedIdentity | null> {
   const tool = await pickTool(mcp, LUAU_CANDIDATES, signal);
   if (tool === undefined) return null;
 
-  // `GetComponents` is the only exact form: `cf.Position` alone would lose the rotation, which is the
-  // half of a move that a user notices first (a part turned 90° looks like a different part).
+  // One round trip for all three: the name, the parent path and the transform. A call per property
+  // would cost three MCP round trips on every mutating tool call, and the transform is not in the bag
+  // at all. `GetComponents` is the only exact form — `cf.Position` alone would lose the rotation,
+  // which is the half of a move a user notices first (a part turned 90° looks like a different part).
   const code = [
     resolveLuau(path),
     'if root == nil then return "none" end',
+    'local info = { name = root.Name }',
+    'local parent = root.Parent',
+    'if parent ~= nil and parent ~= game then info.parentPath = parent:GetFullName() end',
     'local function comps(cf)',
     '  local x, y, z, r00, r01, r02, r10, r11, r12, r20, r21, r22 = cf:GetComponents()',
     '  return { x, y, z, r00, r01, r02, r10, r11, r12, r20, r21, r22 }',
     'end',
     'local okCf, cf = pcall(function() return root.CFrame end)',
     'if okCf and typeof(cf) == "CFrame" then',
-    '  return game:GetService("HttpService"):JSONEncode({ key = "CFrame", components = comps(cf) })',
+    '  info.key = "CFrame"',
+    '  info.components = comps(cf)',
+    'else',
+    '  local okWp, wp = pcall(function() return root.WorldPivot end)',
+    '  if okWp and typeof(wp) == "CFrame" then',
+    '    info.key = "WorldPivot"',
+    '    info.components = comps(wp)',
+    '  end',
     'end',
-    'local okWp, wp = pcall(function() return root.WorldPivot end)',
-    'if okWp and typeof(wp) == "CFrame" then',
-    '  return game:GetService("HttpService"):JSONEncode({ key = "WorldPivot", components = comps(wp) })',
-    'end',
-    'return "none"',
+    'return game:GetService("HttpService"):JSONEncode(info)',
   ].join('\n');
 
   const result = await mcp.callTool(tool.name, { code, datamodel_type: DATAMODEL }, signal);
@@ -828,14 +895,45 @@ export async function captureCframe(
   } catch {
     return null;
   }
-  const record = (parsed ?? {}) as { key?: unknown; components?: unknown };
+  const record = (parsed ?? {}) as { name?: unknown; parentPath?: unknown; key?: unknown; components?: unknown };
+  if (typeof record.name !== 'string') return null;
+
+  let cframe: CapturedCframe | null = null;
   const key = record.key;
   const components = record.components;
-  if (key !== 'CFrame' && key !== 'WorldPivot') return null;
-  if (!Array.isArray(components) || components.length !== 12) return null;
-  const numbers = components.map((value) => (typeof value === 'number' ? value : Number(value)));
-  if (numbers.some((value) => !Number.isFinite(value))) return null;
-  return { key, components: numbers, position: numbers.slice(0, 3) };
+  if ((key === 'CFrame' || key === 'WorldPivot') && Array.isArray(components) && components.length === 12) {
+    const numbers = components.map((value) => (typeof value === 'number' ? value : Number(value)));
+    if (!numbers.some((value) => !Number.isFinite(value))) {
+      cframe = { key, components: numbers, position: numbers.slice(0, 3) };
+    }
+  }
+  const parentPath = typeof record.parentPath === 'string' && record.parentPath !== '' ? record.parentPath : null;
+  return { name: record.name, parentPath, cframe };
+}
+
+/** Just the transform, when that is all the caller needs (drift and verification read the identity). */
+export async function captureCframe(
+  mcp: McpGateway,
+  path: string,
+  signal?: AbortSignal,
+): Promise<CapturedCframe | null> {
+  return (await captureIdentity(mcp, path, signal))?.cframe ?? null;
+}
+
+/** Markers for the identity, so it flows through the same property pipeline as the scalars. */
+export function identityMarkers(identity: CapturedIdentity): Record<string, unknown> {
+  const markers: Record<string, unknown> = { Name: { $name: identity.name } };
+  if (identity.parentPath !== null) markers.Parent = { $parent: identity.parentPath };
+  if (identity.cframe !== null) markers[identity.cframe.key] = cframeMarker(identity.cframe);
+  return markers;
+}
+
+/** Compare stored identity markers with a freshly captured identity (tolerance only for the transform). */
+export function sameIdentity(name: unknown, parent: unknown, live: CapturedIdentity | null): boolean {
+  if (live === null) return false;
+  if (isNameValue(name) && name.$name !== live.name) return false;
+  if (isParentValue(parent) && parent.$parent !== (live.parentPath ?? '')) return false;
+  return true;
 }
 
 /** A captured CFrame as it is stored in a property bag (marker, so it survives JSON round-trips). */

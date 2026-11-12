@@ -297,6 +297,27 @@ Proved live: a part at `10,5,0` rotated 90° about X, moved by the turn to `50,1
 Y, comes back to `10.000,5.000,0.000|1.000,0.000,0.000,0.000,-0.000,-1.000,0.000,1.000,-0.000` — the
 exact matrix the snapshot recorded — and a hand move to `999,0,999` is left alone.
 
+### Undoing a RENAME or a REPARENT — the identity is captured too
+
+Neither `Name` nor `Parent` is in the `inspect_instance` bag (the tool reports the name as a
+top-level field and never reports the parent), so a rename or a reparent had no inverse while the
+checkpoint still claimed `restorable` — the worst kind of gap, because the undo LOOKED complete.
+
+`captureIdentity` reads all three not-in-the-bag facts in ONE Luau round trip — name, parent dot path
+and the transform — and stores them as markers next to the scalars:
+
+- `{$name: "OldPart"}` becomes a JSON string literal, which `inst.Name = …` accepts directly.
+- `{$parent: "ReplicatedStorage.Assets"}` is resolved back to an INSTANCE, because
+  `inst.Parent = "ReplicatedStorage"` fails with "Instance expected, got string" — that string form
+  is exactly why a reparent used to be silently un-undoable. A parent that no longer resolves is
+  reported as `skipped` with its own reason, never as a successful move.
+- The parent marker is checked BEFORE the deny list, since `Parent` stays denied as a plain scalar.
+
+Drift compares the identity as well as the scalars, with the same three cases: what the turn wrote
+(restorable), already back at the snapshot (no-op note), or changed by hand (refuse). Verification
+re-captures the identity after the write, so a rename that reported "applied" but did not land is
+`restore-failed`.
+
 ### Undoing a DELETE — the instance is rebuilt, not just reported
 
 A delete used to make a whole turn non-restorable: there is nothing left to read afterwards. The
@@ -331,7 +352,7 @@ snapshot now captures the subtree BEFORE the destroy and the inverse is a recrea
 
 ## Verification gate (last green run)
 
-- `server tsc --noEmit` clean; `server vitest` **771 passed / 5 skipped** (5 skip = live probe).
+- `server tsc --noEmit` clean; `server vitest` **776 passed / 5 skipped** (5 skip = live probe).
 - `MORPHI_LIVE_STUDIO=1 npx vitest run src/harness/checkpoints/liveProbe.test.ts` → **5/5 passed**
   on real `Place1` (script restore snapshot→mutate→undo→read-back; property restore incl. string
   `CollisionGroup` + `skipped`; Vector3/BrickColor reconstruction restored and re-inspected).

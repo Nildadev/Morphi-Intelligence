@@ -350,17 +350,113 @@ check('an already-restored turn is not restorable again', afterFirstUndo.body?.s
 check('the hand move survived', (await partTransform()) === handMoved, await partTransform());
 
 // ---------------------------------------------------------------------------------------------
+// Scenario 5 — a RENAME + REPARENT: neither value is in the property bag
+// ---------------------------------------------------------------------------------------------
+console.log('\n[5] rename/reparent turn');
+
+/** name + parent path, exactly what the undo has to put back. */
+async function identityOf(name) {
+  return withStudio(async (client) => {
+    const code = 'local root = game:GetService("Workspace"):FindFirstChild(' + JSON.stringify(name) + ')\n'
+      + 'if root == nil then return "missing" end\n'
+      + 'return root.Name .. "|" .. root.Parent:GetFullName()';
+    const result = await client.callTool({ name: 'execute_luau', arguments: { code, datamodel_type: 'Edit' } });
+    return String(result.content?.find((part) => typeof part.text === 'string')?.text ?? '').trim();
+  });
+}
+
+async function seedFolderAndPart() {
+  return withStudio((client) => client.callTool({
+    name: 'execute_luau',
+    arguments: {
+      code: 'local ws = game:GetService("Workspace")' + '\n'
+        + 'local oldPart = ws:FindFirstChild("MorphiE2EPart")' + '\n'
+        + 'if oldPart ~= nil then oldPart:Destroy() end' + '\n'
+        + 'local oldRenamed = ws:FindFirstChild("MorphiE2ERenamed")' + '\n'
+        + 'if oldRenamed ~= nil then oldRenamed:Destroy() end' + '\n'
+        + 'local oldFolder = ws:FindFirstChild("MorphiE2EFolder")' + '\n'
+        + 'if oldFolder ~= nil then oldFolder:Destroy() end' + '\n'
+        + 'local folder = Instance.new("Folder")' + '\n'
+        + 'folder.Name = "MorphiE2EFolder"' + '\n'
+        + 'folder.Parent = ws' + '\n'
+        + 'local part = Instance.new("Part")' + '\n'
+        + 'part.Name = "MorphiE2EPart"' + '\n'
+        + 'part.Anchored = true' + '\n'
+        + 'part.Parent = ws' + '\n'
+        + 'return "ok"',
+      datamodel_type: 'Edit',
+    },
+  }));
+}
+
+await seedFolderAndPart();
+const beforeIdentity = await identityOf('MorphiE2EPart');
+check('part starts at Workspace with its own name', beforeIdentity === 'MorphiE2EPart|Workspace', beforeIdentity);
+
+const renameSession = await newSession('e2e-rename-undo');
+const renameTurn = await turn(renameSession, '/script studio-rename');
+check('rename turn stream finished', renameTurn.status === 200, `${renameTurn.sse.length} bytes`);
+check('part really moved and renamed by the turn', (await identityOf('MorphiE2ERenamed')) === 'MorphiE2ERenamed|Workspace.MorphiE2EFolder',
+  await identityOf('MorphiE2ERenamed'));
+check('the old path is gone', (await identityOf('MorphiE2EPart')) === 'missing', await identityOf('MorphiE2EPart'));
+
+const renamed = await restorableCallIds(renameSession);
+check('rename checkpoint recorded as restorable', renamed.restorable.length === 1,
+  `${renamed.restorable.length} restorable: ${renamed.callIds.join(', ')}`);
+if (renamed.restorable.length === 0) console.log(JSON.stringify(renamed.rows, null, 2).slice(0, 2000));
+
+const renameUndo = await api('POST', `/api/sessions/${renameSession}/undo-turn`, { callIds: renamed.callIds });
+check('rename undo-turn 200', renameUndo.status === 200, JSON.stringify(renameUndo.body).slice(0, 400));
+check('rename undo reported a restore', renameUndo.body?.status === 'restored', JSON.stringify(renameUndo.body).slice(0, 700));
+const backIdentity = await identityOf('MorphiE2EPart');
+check('part back at Workspace with its old name', backIdentity === 'MorphiE2EPart|Workspace', backIdentity);
+
+// Reparenting it by hand afterwards must not be undone on top of the user's choice.
+await withStudio((client) => client.callTool({
+  name: 'execute_luau',
+  arguments: {
+    code: 'local part = game:GetService("Workspace"):FindFirstChild("MorphiE2EPart")'
+      + '\n'
+      + 'part.Parent = game:GetService("ServerStorage")'
+      + '\n'
+      + 'return "ok"',
+    datamodel_type: 'Edit',
+  },
+}));
+const handParent = await withStudio(async (client) => {
+  const result = await client.callTool({
+    name: 'execute_luau',
+    arguments: {
+      code: 'local p = game:GetService("ServerStorage"):FindFirstChild("MorphiE2EPart")'
+        + '\n'
+        + 'return p == nil and "missing" or "ServerStorage"',
+      datamodel_type: 'Edit',
+    },
+  });
+  return String(result.content?.find((part) => typeof part.text === 'string')?.text ?? '').trim();
+});
+check('part hand-reparented into ServerStorage', handParent === 'ServerStorage', handParent);
+
+// ---------------------------------------------------------------------------------------------
 // Cleanup — the place must not keep probe fixtures
 // ---------------------------------------------------------------------------------------------
 await destroyLive(A);
 await destroyLive(B);
 await destroyLive(modelPath);
 await destroyLive(partPath);
+// The rename scenario leaves three fixtures: the renamed part, the folder it was moved into, and
+// (after the hand-reparent) a part in ServerStorage. `destroyLive` resolves the service by name, so
+// each of them goes with its own path.
+await destroyLive('Workspace.MorphiE2ERenamed');
+await destroyLive('Workspace.MorphiE2EFolder');
+await destroyLive('ServerStorage.MorphiE2EPart');
 const goneA = await readLive(A);
 const goneB = await readLive(B);
 check('probe scripts removed from the place', !goneA.ok && !goneB.ok);
 check('probe model removed from the place', (await modelShape()) === 'missing');
 check('probe part removed from the place', (await partTransform()) === 'missing');
+check('probe folder and renamed part removed', (await identityOf('MorphiE2ERenamed')) === 'missing'
+  && (await identityOf('MorphiE2EFolder')) === 'missing');
 
 console.log(failures === 0 ? '\nE2E OK' : `\nE2E FAILED (${failures})`);
 process.exit(failures === 0 ? 0 : 1);

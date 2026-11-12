@@ -1,8 +1,8 @@
 import type { McpGateway } from '../tools/types';
 import {
-  captureCframe,
+  captureIdentity,
   captureInstanceTree,
-  cframeMarker,
+  identityMarkers,
   inspectInstance,
   readScriptSource,
   restorableProperties,
@@ -218,15 +218,15 @@ export async function snapshotPreState(
     if (path !== null) {
       const properties = await inspectInstance(mcp, path, signal);
       if (properties !== null) {
-        // A raw `inspect_instance` bag is lossy (flattened pseudo-paths, stringified Vector3/enums).
-        // Scalars are kept as candidates and `setInstanceProperties` decides key by key, recording
-        // what this build refuses — see `restorableProperties`.
-        const restorable = restorableProperties(properties);
-        // The transform cannot come from the bag at all: it arrives as the pseudo-paths
-        // `CFrame.Position`/`CFrame.Rotation`, so it is read separately and stored as a marker. Without
-        // this, MOVING a part — the most common Studio edit there is — was not restorable.
-        const cframe = await captureCframe(mcp, path, signal);
-        if (cframe !== null) restorable[cframe.key] = cframeMarker(cframe);
+        // A raw `inspect_instance` bag is lossy (flattened pseudo-paths, stringified Vector3/enums),
+        // and it does not carry the instance's NAME, its PARENT or its transform at all. The identity
+        // is read separately and merged first: without it, a rename, a reparent or a MOVE — the three
+        // most common Studio edits — had no inverse while the checkpoint still claimed restorable.
+        const identity = await captureIdentity(mcp, path, signal);
+        const restorable = {
+          ...(identity === null ? {} : identityMarkers(identity)),
+          ...restorableProperties(properties),
+        };
         if (Object.keys(restorable).length === 0) {
           notes.push(`Không có thuộc tính nào của ${path} khôi phục được an toàn.`);
         } else {
@@ -356,10 +356,11 @@ export async function snapshotPostState(
       continue;
     }
     const properties = restorableProperties(bag);
-    // The transform must be captured here too: drift detection compares the live CFrame with what the
-    // TURN wrote, and without a post marker a moved part would look hand-edited to itself.
-    const cframe = await captureCframe(mcp, entry.path, signal);
-    if (cframe !== null) properties[cframe.key] = cframeMarker(cframe);
+    // The identity must be captured here too: drift detection compares the live name/parent/transform
+    // with what the TURN wrote, and without a post marker a renamed or moved instance would look
+    // hand-edited to its own undo.
+    const identity = await captureIdentity(mcp, entry.path, signal);
+    if (identity !== null) Object.assign(properties, identityMarkers(identity));
     entries.push({ kind: 'properties', path: entry.path, properties });
   }
   return { entries, notes };

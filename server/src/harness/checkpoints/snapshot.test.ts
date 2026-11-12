@@ -267,7 +267,9 @@ describe('snapshotPreState - a Luau property write names its target in the code'
                 callTool: async (name: string, args: unknown) => {
                     const code = String((args as { code?: string }).code ?? '');
                     calls.push(name);
-                    if (code.includes('GetComponents')) return JSON.stringify({ key: 'CFrame', components: [1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1] });
+                    if (code.includes('GetComponents')) {
+                        return JSON.stringify({ key: 'CFrame', components: [1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1], name: 'Part', parentPath: 'Workspace' });
+                    }
                     if (name === 'inspect_instance') return JSON.stringify({ properties: { Anchored: true } });
                     return 'none';
                 },
@@ -281,6 +283,10 @@ describe('snapshotPreState - a Luau property write names its target in the code'
         expect(properties.CFrame).toEqual({
             $cframe: { key: 'CFrame', components: [1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1], position: [1, 0, 0] },
         });
+        // Name and Parent are captured too: neither is in the bag, so a rename or a reparent used to
+        // have no inverse while the checkpoint still claimed restorable.
+        expect(properties.Name).toEqual({ $name: 'Part' });
+        expect(properties.Parent).toEqual({ $parent: 'Workspace' });
         expect(calls).toContain('inspect_instance');
         expect(isRestorable(snapshot)).toBe(true);
     });
